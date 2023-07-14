@@ -1,4 +1,15 @@
 #!/usr/bin/make -f
 
+#export DH_VERBOSE = 1
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+export DEB_CFLAGS_MAINT_APPEND  = -Wall -pedantic
+export ADDFLAGS = -ffile-prefix-map=$(CURDIR)=.
+
 %:
 	dh $@
+
+override_dh_auto_install:
+	dh_auto_install -- DESTDIR=$(CURDIR)/debian/btop PREFIX=/usr
+
+	mkdir -p $(CURDIR)/debian/btop/usr/share/doc/btop
+	mv $(CURDIR)/debian/btop//usr/share/btop/README.md $(CURDIR)/debian/btop/usr/share/doc/btop
