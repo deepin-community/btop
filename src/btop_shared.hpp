@@ -26,10 +26,9 @@ tab-size = 4
 #include <tuple>
 #include <vector>
 #include <ifaddrs.h>
-#include <robin_hood.h>
+#include <unordered_map>
 #include <unistd.h>
 
-using robin_hood::unordered_flat_map;
 using std::array;
 using std::atomic;
 using std::deque;
@@ -55,6 +54,7 @@ namespace Global {
 	extern string overlay;
 	extern string clock;
 	extern uid_t real_uid, set_uid;
+	extern atomic<bool> init_conf;
 }
 
 namespace Runner {
@@ -68,7 +68,7 @@ namespace Runner {
 	extern bool pause_output;
 	extern string debug_bg;
 
-    void run(const string& box="", bool no_update = false, bool force_redraw = false);
+	void run(const string& box="", bool no_update = false, bool force_redraw = false);
 	void stop();
 
 }
@@ -86,6 +86,91 @@ namespace Shared {
 }
 
 
+namespace Gpu {
+#ifdef GPU_SUPPORT
+	extern vector<string> box;
+	extern int width, height, min_width, min_height;
+	extern vector<int> x_vec, y_vec;
+	extern vector<bool> redraw;
+	extern int shown;
+	extern vector<char> shown_panels;
+	extern vector<string> gpu_names;
+	extern vector<int> gpu_b_height_offsets;
+	extern long long gpu_pwr_total_max;
+
+	extern std::unordered_map<string, deque<long long>> shared_gpu_percent; // averages, power/vram total
+
+  const array mem_names { "used"s, "free"s };
+
+	//* Container for process information // TODO
+	/*struct proc_info {
+    unsigned int pid;
+    unsigned long long mem;
+	};*/
+
+	//* Container for supported Gpu::*::collect() functions
+	struct gpu_info_supported {
+		bool gpu_utilization = true,
+		   	 mem_utilization = true,
+				 gpu_clock = true,
+				 mem_clock = true,
+				 pwr_usage = true,
+				 pwr_state = true,
+				 temp_info = true,
+				 mem_total = true,
+				 mem_used = true,
+				 pcie_txrx = true;
+	};
+
+	//* Per-device container for GPU info
+	struct gpu_info {
+		std::unordered_map<string, deque<long long>> gpu_percent = {
+			{"gpu-totals", {}},
+			{"gpu-vram-totals", {}},
+			{"gpu-pwr-totals", {}},
+		};
+		unsigned int gpu_clock_speed; // MHz
+
+		long long pwr_usage; // mW
+		long long pwr_max_usage = 255000;
+		long long pwr_state;
+
+		deque<long long> temp = {0};
+		long long temp_max = 110;
+
+		long long mem_total = 0;
+		long long mem_used = 0;
+		deque<long long> mem_utilization_percent = {0}; // TODO: properly handle GPUs that can't report some stats
+		long long mem_clock_speed = 0; // MHz
+
+		long long pcie_tx = 0; // KB/s
+		long long pcie_rx = 0;
+
+		gpu_info_supported supported_functions;
+
+		// vector<proc_info> graphics_processes = {}; // TODO
+		// vector<proc_info> compute_processes = {};
+	};
+
+	namespace Nvml {
+		extern bool shutdown();
+	}
+	namespace Rsmi {
+		extern bool shutdown();
+	}
+
+	//* Collect gpu stats and temperatures
+    auto collect(bool no_update = false) -> vector<gpu_info>&;
+
+	//* Draw contents of gpu box using <gpus> as source
+  	string draw(const gpu_info& gpu, unsigned long index, bool force_redraw, bool data_same);
+#else
+	struct gpu_info {
+		bool supported = false;
+	};
+#endif
+}
+
 namespace Cpu {
 	extern string box;
 	extern int x, y, width, height, min_width, min_height;
@@ -96,7 +181,7 @@ namespace Cpu {
 	extern tuple<int, long, string> current_bat;
 
 	struct cpu_info {
-		unordered_flat_map<string, deque<long long>> cpu_percent = {
+		std::unordered_map<string, deque<long long>> cpu_percent = {
 			{"total", {}},
 			{"user", {}},
 			{"nice", {}},
@@ -112,18 +197,20 @@ namespace Cpu {
 		vector<deque<long long>> core_percent;
 		vector<deque<long long>> temp;
 		long long temp_max = 0;
-		array<float, 3> load_avg;
+		array<double, 3> load_avg;
 	};
 
 	//* Collect cpu stats and temperatures
-    auto collect(bool no_update = false) -> cpu_info&;
+	auto collect(bool no_update = false) -> cpu_info&;
 
 	//* Draw contents of cpu box using <cpu> as source
-    string draw(const cpu_info& cpu, bool force_redraw = false, bool data_same = false);
+    string draw(const cpu_info& cpu, const vector<Gpu::gpu_info>& gpu, bool force_redraw = false, bool data_same = false);
 
 	//* Parse /proc/cpu info for mapping of core ids
-	auto get_core_mapping() -> unordered_flat_map<int, int>;
-	extern unordered_flat_map<int, int> core_mapping;
+	auto get_core_mapping() -> std::unordered_map<int, int>;
+	extern std::unordered_map<int, int> core_mapping;
+
+	auto get_cpuHz() -> string;
 
 	//* Get battery info from /sys
 	auto get_battery() -> tuple<int, long, string>;
@@ -133,20 +220,20 @@ namespace Mem {
 	extern string box;
 	extern int x, y, width, height, min_width, min_height;
 	extern bool has_swap, shown, redraw;
-    const array mem_names { "used"s, "available"s, "cached"s, "free"s };
-    const array swap_names { "swap_used"s, "swap_free"s };
+	const array mem_names { "used"s, "available"s, "cached"s, "free"s };
+	const array swap_names { "swap_used"s, "swap_free"s };
 	extern int disk_ios;
 
 	struct disk_info {
 		std::filesystem::path dev;
 		string name;
-        string fstype{};                // defaults to ""
-        std::filesystem::path stat{};   // defaults to ""
-        int64_t total{};                // defaults to 0
-        int64_t used{};                 // defaults to 0
-        int64_t free{};                 // defaults to 0
-        int used_percent{};             // defaults to 0
-        int free_percent{};             // defaults to 0
+		string fstype{};                // defaults to ""
+		std::filesystem::path stat{};   // defaults to ""
+		int64_t total{};
+		int64_t used{};
+		int64_t free{};
+		int used_percent{};
+		int free_percent{};
 
 		array<int64_t, 3> old_io = {0, 0, 0};
 		deque<long long> io_read = {};
@@ -155,13 +242,13 @@ namespace Mem {
 	};
 
 	struct mem_info {
-		unordered_flat_map<string, uint64_t> stats =
+		std::unordered_map<string, uint64_t> stats =
 			{{"used", 0}, {"available", 0}, {"cached", 0}, {"free", 0},
 			{"swap_total", 0}, {"swap_used", 0}, {"swap_free", 0}};
-		unordered_flat_map<string, deque<long long>> percent =
+		std::unordered_map<string, deque<long long>> percent =
 			{{"used", {}}, {"available", {}}, {"cached", {}}, {"free", {}},
 			{"swap_total", {}}, {"swap_used", {}}, {"swap_free", {}}};
-		unordered_flat_map<string, disk_info> disks;
+		std::unordered_map<string, disk_info> disks;
 		vector<string> disks_order;
 	};
 
@@ -169,10 +256,10 @@ namespace Mem {
 	uint64_t get_totalMem();
 
 	//* Collect mem & disks stats
-    auto collect(bool no_update = false) -> mem_info&;
+	auto collect(bool no_update = false) -> mem_info&;
 
 	//* Draw contents of mem box using <mem> as source
-    string draw(const mem_info& mem, bool force_redraw = false, bool data_same = false);
+	string draw(const mem_info& mem, bool force_redraw = false, bool data_same = false);
 
 }
 
@@ -183,32 +270,32 @@ namespace Net {
 	extern string selected_iface;
 	extern vector<string> interfaces;
 	extern bool rescale;
-	extern unordered_flat_map<string, uint64_t> graph_max;
+	extern std::unordered_map<string, uint64_t> graph_max;
 
 	struct net_stat {
-        uint64_t speed{};       // defaults to 0
-        uint64_t top{};         // defaults to 0
-        uint64_t total{};       // defaults to 0
-        uint64_t last{};        // defaults to 0
-        uint64_t offset{};      // defaults to 0
-        uint64_t rollover{};    // defaults to 0
+		uint64_t speed{};
+		uint64_t top{};
+		uint64_t total{};
+		uint64_t last{};
+		uint64_t offset{};
+		uint64_t rollover{};
 	};
 
 	struct net_info {
-		unordered_flat_map<string, deque<long long>> bandwidth = { {"download", {}}, {"upload", {}} };
-		unordered_flat_map<string, net_stat> stat = { {"download", {}}, {"upload", {}} };
-        string ipv4{};      // defaults to ""
-        string ipv6{};      // defaults to ""
-        bool connected{};   // defaults to false
+		std::unordered_map<string, deque<long long>> bandwidth = { {"download", {}}, {"upload", {}} };
+		std::unordered_map<string, net_stat> stat = { {"download", {}}, {"upload", {}} };
+		string ipv4{};      // defaults to ""
+		string ipv6{};      // defaults to ""
+		bool connected{};
 	};
 
-	extern unordered_flat_map<string, net_info> current_net;
+	extern std::unordered_map<string, net_info> current_net;
 
 	//* Collect net upload/download stats
-    auto collect(bool no_update=false) -> net_info&;
+	auto collect(bool no_update=false) -> net_info&;
 
 	//* Draw contents of net box using <net> as source
-    string draw(const net_info& net, bool force_redraw = false, bool data_same = false);
+	string draw(const net_info& net, bool force_redraw = false, bool data_same = false);
 }
 
 namespace Proc {
@@ -235,7 +322,7 @@ namespace Proc {
 	};
 
 	//? Translation from process state char to explanative string
-	const unordered_flat_map<char, string> proc_states = {
+	const std::unordered_map<char, string> proc_states = {
 		{'R', "Running"},
 		{'S', "Sleeping"},
 		{'D', "Waiting"},
@@ -251,32 +338,32 @@ namespace Proc {
 
 	//* Container for process information
 	struct proc_info {
-        size_t pid{};           // defaults to 0
-        string name{};          // defaults to ""
-        string cmd{};           // defaults to ""
-        string short_cmd{};     // defaults to ""
-        size_t threads{};       // defaults to 0
-        int name_offset{};      // defaults to 0
-        string user{};          // defaults to ""
-        uint64_t mem{};         // defaults to 0
-        double cpu_p{};         // defaults to = 0.0
-        double cpu_c{};         // defaults to = 0.0
+		size_t pid{};
+		string name{};          // defaults to ""
+		string cmd{};           // defaults to ""
+		string short_cmd{};     // defaults to ""
+		size_t threads{};
+		int name_offset{};
+		string user{};          // defaults to ""
+		uint64_t mem{};
+		double cpu_p{};         // defaults to = 0.0
+		double cpu_c{};         // defaults to = 0.0
 		char state = '0';
-        int64_t p_nice{};      // defaults to 0
-        uint64_t ppid{};        // defaults to 0
-        uint64_t cpu_s{};       // defaults to 0
-        uint64_t cpu_t{};       // defaults to 0
-        string prefix{};        // defaults to ""
-        size_t depth{};         // defaults to 0
-        size_t tree_index{};    // defaults to 0
-        bool collapsed{};       // defaults to false
-        bool filtered{};        // defaults to false
+		int64_t p_nice{};
+		uint64_t ppid{};
+		uint64_t cpu_s{};
+		uint64_t cpu_t{};
+		string prefix{};        // defaults to ""
+		size_t depth{};
+		size_t tree_index{};
+		bool collapsed{};
+		bool filtered{};
 	};
 
 	//* Container for process info box
 	struct detail_container {
-        size_t last_pid{}; // defaults to 0
-        bool skip_smaps{}; // defaults to false
+		size_t last_pid{};
+		bool skip_smaps{};
 		proc_info entry;
 		string elapsed, parent, status, io_read, io_write, memory;
 		long long first_mem = -1;
@@ -288,13 +375,13 @@ namespace Proc {
 	extern detail_container detailed;
 
 	//* Collect and sort process information from /proc
-    auto collect(bool no_update = false) -> vector<proc_info>&;
+	auto collect(bool no_update = false) -> vector<proc_info>&;
 
 	//* Update current selection and view, returns -1 if no change otherwise the current selection
 	int selection(const string& cmd_key);
 
 	//* Draw contents of proc box using <plist> as data source
-    string draw(const vector<proc_info>& plist, bool force_redraw = false, bool data_same = false);
+	string draw(const vector<proc_info>& plist, bool force_redraw = false, bool data_same = false);
 
 	struct tree_proc {
 		std::reference_wrapper<proc_info> entry;
@@ -302,14 +389,14 @@ namespace Proc {
 	};
 
 	//* Sort vector of proc_info's
-    void proc_sorter(vector<proc_info>& proc_vec, const string& sorting, bool reverse, bool tree = false);
+	void proc_sorter(vector<proc_info>& proc_vec, const string& sorting, bool reverse, bool tree = false);
 
 	//* Recursive sort of process tree
-    void tree_sort(vector<tree_proc>& proc_vec, const string& sorting,
-                   bool reverse, int& c_index, const int index_max, bool collapsed = false);
+	void tree_sort(vector<tree_proc>& proc_vec, const string& sorting,
+				   bool reverse, int& c_index, const int index_max, bool collapsed = false);
 
 	//* Generate process tree list
-    void _tree_gen(proc_info& cur_proc, vector<proc_info>& in_procs, vector<tree_proc>& out_procs,
-                   int cur_depth, bool collapsed, const string& filter,
-                   bool found = false, bool no_update = false, bool should_filter = false);
+	void _tree_gen(proc_info& cur_proc, vector<proc_info>& in_procs, vector<tree_proc>& out_procs,
+				   int cur_depth, bool collapsed, const string& filter,
+				   bool found = false, bool no_update = false, bool should_filter = false);
 }

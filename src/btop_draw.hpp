@@ -21,10 +21,9 @@ tab-size = 4
 #include <string>
 #include <vector>
 #include <array>
-#include <robin_hood.h>
+#include <unordered_map>
 #include <deque>
 
-using robin_hood::unordered_flat_map;
 using std::array;
 using std::deque;
 using std::string;
@@ -66,8 +65,8 @@ namespace Draw {
 
 	//* An editable text field
 	class TextEdit {
-        size_t pos{};   // defaults to 0
-        size_t upos{};  // defaults to 0
+		size_t pos{};
+		size_t upos{};
 		bool numeric;
 	public:
 		string text;
@@ -79,11 +78,11 @@ namespace Draw {
 	};
 
 	//* Create a box and return as a string
-    string createBox(const int x, const int y, const int width,
-        const int height, string line_color = "", bool fill = false,
-        const string title = "", const string title2 = "", const int num = 0);
+	string createBox(const int x, const int y, const int width,
+		const int height, string line_color = "", bool fill = false,
+		const string title = "", const string title2 = "", const int num = 0);
 
-    bool update_clock(bool force = false);
+	bool update_clock(bool force = false);
 
 	//* Class holding a percentage meter
 	class Meter {
@@ -93,7 +92,7 @@ namespace Draw {
 		array<string, 101> cache;
 	public:
 		Meter();
-        Meter(const int width, const string& color_gradient, bool invert = false);
+		Meter(const int width, const string& color_gradient, bool invert = false);
 
 		//* Return a string representation of the meter with given value
 		string operator()(int value);
@@ -108,22 +107,22 @@ namespace Draw {
 		long long offset;
 		long long last = 0, max_value = 0;
 		bool current = true, tty_mode = false;
-		unordered_flat_map<bool, vector<string>> graphs = { {true, {}}, {false, {}}};
+		std::unordered_map<bool, vector<string>> graphs = { {true, {}}, {false, {}}};
 
 		//* Create two representations of the graph to switch between to represent two values for each braille character
 		void _create(const deque<long long>& data, int data_offset);
 
 	public:
 		Graph();
-        Graph(int width, int height,
-            const string& color_gradient,
-            const deque<long long>& data,
-            const string& symbol="default",
-            bool invert=false, bool no_zero=false,
-            long long max_value=0, long long offset=0);
+		Graph(int width, int height,
+			const string& color_gradient,
+			const deque<long long>& data,
+			const string& symbol="default",
+			bool invert=false, bool no_zero=false,
+			long long max_value=0, long long offset=0);
 
 		//* Add last value from back of <data> and return string representation of graph
-        string& operator()(const deque<long long>& data, bool data_same=false);
+		string& operator()(const deque<long long>& data, bool data_same=false);
 
 		//* Return string representation of graph
 		string& operator()();
@@ -135,6 +134,6 @@ namespace Draw {
 
 namespace Proc {
 	extern Draw::TextEdit filter;
-	extern unordered_flat_map<size_t, Draw::Graph> p_graphs;
-	extern unordered_flat_map<size_t, int> p_counters;
+	extern std::unordered_map<size_t, Draw::Graph> p_graphs;
+	extern std::unordered_map<size_t, int> p_counters;
 }

@@ -4,7 +4,7 @@
    you may not use this file except in compliance with the License.
    You may obtain a copy of the License at
 
-       http://www.apache.org/licenses/LICENSE-2.0
+	   http://www.apache.org/licenses/LICENSE-2.0
 
    Unless required by applicable law or agreed to in writing, software
    distributed under the License is distributed on an "AS IS" BASIS,
@@ -22,12 +22,11 @@ tab-size = 4
 #include <filesystem>
 #include <string>
 #include <vector>
-#include <robin_hood.h>
+#include <unordered_map>
 
 using std::array;
 using std::string;
 using std::vector;
-using robin_hood::unordered_flat_map;
 
 namespace Theme {
 	extern std::filesystem::path theme_dir;
@@ -40,13 +39,13 @@ namespace Theme {
 	//* Args	hexa: ["#000000"-"#ffffff"] for color, ["#00"-"#ff"] for greyscale
 	//*			t_to_256: [true|false] convert 24bit value to 256 color value
 	//* 		depth: ["fg"|"bg"] for either a foreground color or a background color
-    string hex_to_color(string hexa, bool t_to_256=false, const string& depth="fg");
+	string hex_to_color(string hexa, bool t_to_256=false, const string& depth="fg");
 
 	//* Generate escape sequence for 24-bit or 256 color and return as a string
 	//* Args	r: [0-255], g: [0-255], b: [0-255]
 	//*			t_to_256: [true|false] convert 24bit value to 256 color value
 	//* 		depth: ["fg"|"bg"] for either a foreground color or a background color
-    string dec_to_color(int r, int g, int b, bool t_to_256=false, const string& depth="fg");
+	string dec_to_color(int r, int g, int b, bool t_to_256=false, const string& depth="fg");
 
 	//* Update list of paths for available themes
 	void updateThemes();
@@ -54,9 +53,9 @@ namespace Theme {
 	//* Set current theme from current "color_theme" value in config
 	void setTheme();
 
-	extern unordered_flat_map<string, string> colors;
-	extern unordered_flat_map<string, array<int, 3>> rgbs;
-	extern unordered_flat_map<string, array<string, 101>> gradients;
+	extern std::unordered_map<string, string> colors;
+	extern std::unordered_map<string, array<int, 3>> rgbs;
+	extern std::unordered_map<string, array<string, 101>> gradients;
 
 	//* Return escape code for color <name>
 	inline const string& c(const string& name) { return colors.at(name); }
