@@ -4,7 +4,7 @@
    you may not use this file except in compliance with the License.
    You may obtain a copy of the License at
 
-       http://www.apache.org/licenses/LICENSE-2.0
+	   http://www.apache.org/licenses/LICENSE-2.0
 
    Unless required by applicable law or agreed to in writing, software
    distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,22 +16,21 @@ indent = tab
 tab-size = 4
 */
 
-#include <iostream>
+#include <limits>
 #include <ranges>
 #include <vector>
 #include <thread>
 #include <mutex>
-
-#include <btop_input.hpp>
-#include <btop_tools.hpp>
-#include <btop_config.hpp>
-#include <btop_shared.hpp>
-#include <btop_menu.hpp>
-#include <btop_draw.hpp>
 #include <signal.h>
+#include <sys/select.h>
+#include <utility>
 
-using std::cin;
-using std::vector;
+#include "btop_input.hpp"
+#include "btop_tools.hpp"
+#include "btop_config.hpp"
+#include "btop_shared.hpp"
+#include "btop_menu.hpp"
+#include "btop_draw.hpp"
 
 using namespace Tools;
 using namespace std::literals; // for operator""s
@@ -40,7 +39,7 @@ namespace rng = std::ranges;
 namespace Input {
 
 	//* Map for translating key codes to readable values
-	const unordered_flat_map<string, string> Key_escapes = {
+	const std::unordered_map<string, string> Key_escapes = {
 		{"\033",	"escape"},
 		{"\n",		"enter"},
 		{" ",		"space"},
@@ -55,9 +54,13 @@ namespace Input {
 		{"[C", 		"right"},
 		{"OC",		"right"},
 		{"[2~",		"insert"},
+		{"[4h",		"insert"},
 		{"[3~",		"delete"},
+		{"[P",		"delete"},
 		{"[H",		"home"},
+		{"[1~",		"home"},
 		{"[F",		"end"},
+		{"[4~",		"end"},
 		{"[5~",		"page_up"},
 		{"[6~",		"page_down"},
 		{"\t",		"tab"},
@@ -76,83 +79,45 @@ namespace Input {
 		{"[24~",	"f12"}
 	};
 
-	std::atomic<bool> interrupt (false);
+	sigset_t signal_mask;
 	std::atomic<bool> polling (false);
 	array<int, 2> mouse_pos;
-	unordered_flat_map<string, Mouse_loc> mouse_mappings;
+	std::unordered_map<string, Mouse_loc> mouse_mappings;
 
 	deque<string> history(50, "");
 	string old_filter;
+	string input;
 
-	struct InputThr {
-		InputThr() : thr(run, this) {
-		}
-
-		static void run(InputThr* that) {
-			that->runImpl();
-		}
-
-		void runImpl() {
-			char ch = 0;
-
-			// TODO(pg83): read whole buffer
-			while (cin.get(ch)) {
-				std::lock_guard<std::mutex> g(lock);
-				current.push_back(ch);
-				if (current.size() > 100) {
-					current.clear();
-				}
-			}
-		}
-
-		size_t avail() {
-			std::lock_guard<std::mutex> g(lock);
-
-			return current.size();
-		}
-
-		std::string get() {
-			std::string res;
-
-			{
-				std::lock_guard<std::mutex> g(lock);
-
-				res.swap(current);
-			}
-
-			return res;
-		}
-
-		static InputThr& instance() {
-			// intentional memory leak, to simplify shutdown process
-			static InputThr* input = new InputThr();
-
-			return *input;
-		}
-
-		std::string current;
-		// TODO(pg83): use std::conditional_variable instead of sleep
-		std::mutex lock;
-		std::thread thr;
-	};
-
-	bool poll(int timeout) {
+	bool poll(const uint64_t timeout) {
 		atomic_lock lck(polling);
-		if (timeout < 1) return InputThr::instance().avail() > 0;
-		while (timeout > 0) {
-			if (interrupt) {
-				interrupt = false;
-				return false;
-			}
-			if (InputThr::instance().avail() > 0) return true;
-			sleep_ms(timeout < 10 ? timeout : 10);
-			timeout -= 10;
+		fd_set fds;
+		FD_ZERO(&fds);
+		FD_SET(STDIN_FILENO, &fds);
+		struct timespec wait;
+		struct timespec *waitptr = nullptr;
+
+		if(timeout != std::numeric_limits<uint64_t>::max()) {
+			wait.tv_sec = timeout / 1000;
+			wait.tv_nsec = (timeout % 1000) * 1000000;
+			waitptr = &wait;
 		}
+
+		if(pselect(STDIN_FILENO + 1, &fds, nullptr, nullptr, waitptr, &signal_mask) > 0) {
+			input.clear();
+			char buf[1024];
+			ssize_t count = 0;
+			while((count = read(STDIN_FILENO, buf, sizeof(buf))) > 0) {
+				input.append(std::string_view(buf, count));
+			}
+
+			return true;
+		}
+
 		return false;
 	}
 
 	string get() {
-		string key = InputThr::instance().get();
+		string key = input;
 		if (not key.empty()) {
 			//? Remove escape code prefix if present
 			if (key.substr(0, 2) == Fx::e) {
@@ -225,10 +190,12 @@ namespace Input {
 	}
 
 	string wait() {
-		while (InputThr::instance().avail() < 1) {
-			sleep_ms(10);
-		}
+		while(not poll(std::numeric_limits<uint64_t>::max())) {}
 		return get();
+	}
+
+	void interrupt() {
+		kill(getpid(), SIGUSR1);
 	}
 
 	void clear() {
@@ -238,8 +205,8 @@ namespace Input {
 	void process(const string& key) {
 		if (key.empty()) return;
 		try {
-            auto filtering = Config::getB("proc_filtering");
-            auto vim_keys = Config::getB("vim_keys");
+			auto filtering = Config::getB("proc_filtering");
+			auto vim_keys = Config::getB("vim_keys");
 			auto help_key = (vim_keys ? "H" : "h");
 			auto kill_key = (vim_keys ? "K" : "k");
 			//? Global input actions
@@ -260,11 +227,21 @@ namespace Input {
 					Menu::show(Menu::Menus::Options);
 					return;
 				}
-				else if (is_in(key, "1", "2", "3", "4")) {
+				else if (key.size() == 1 and isint(key)) {
+					auto intKey = stoi(key);
+				#ifdef GPU_SUPPORT
+					static const array<string, 10> boxes = {"gpu5", "cpu", "mem", "net", "proc", "gpu0", "gpu1", "gpu2", "gpu3", "gpu4"};
+					if ((intKey == 0 and Gpu::gpu_names.size() < 5) or (intKey >= 5 and std::cmp_less(Gpu::gpu_names.size(), intKey - 4)))
+						return;
+				#else
+				static const array<string, 10> boxes = {"", "cpu", "mem", "net", "proc"};
+					if (intKey == 0 or intKey > 4)
+						return;
+				#endif
 					atomic_wait(Runner::active);
 					Config::current_preset = -1;
-					static const array<string, 4> boxes = {"cpu", "mem", "net", "proc"};
-					Config::toggle_box(boxes.at(std::stoi(key) - 1));
+
+					Config::toggle_box(boxes.at(intKey));
 					Draw::calcSizes();
 					Runner::run("all", false, true);
 					return;
@@ -297,12 +274,12 @@ namespace Input {
 					if (key == "enter" or key == "down") {
 						Config::set("proc_filter", Proc::filter.text);
 						Config::set("proc_filtering", false);
-                        old_filter.clear();
-                        if(key == "down"){
-                            process("down");
-                            return;
-                        }
-                    }
+						old_filter.clear();
+						if(key == "down"){
+							process("down");
+							return;
+						}
+					}
 					else if (key == "escape" or key == "mouse_click") {
 						Config::set("proc_filter", old_filter);
 						Config::set("proc_filtering", false);
@@ -342,6 +319,9 @@ namespace Input {
 
 				else if (key == "c")
 					Config::flip("proc_per_core");
+
+				else if (key == "%")
+					Config::flip("proc_mem_bytes");
 
 				else if (key == "delete" and not Config::getS("proc_filter").empty())
 					Config::set("proc_filter", ""s);
@@ -549,7 +529,7 @@ namespace Input {
 		}
 
 		catch (const std::exception& e) {
-            throw std::runtime_error("Input::process(\"" + key + "\") : " + string{e.what()});
+			throw std::runtime_error("Input::process(\"" + key + "\") : " + string{e.what()});
 		}
 	}
 

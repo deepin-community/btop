@@ -1,9 +1,9 @@
 Source: btop
 Section: utils
 Priority: optional
-Maintainer: Marius Gripsgard <marius@ubports.com>
+Maintainer: Marius Gripsgard <mariogrip@debian.org>
 Build-Depends: debhelper-compat (= 13)
-Standards-Version: 4.6.1
+Standards-Version: 4.6.2
 Rules-Requires-Root: no
 Homepage: https://github.com/aristocratos/btop
 Vcs-Browser: https://salsa.debian.org/mariogrip/btop

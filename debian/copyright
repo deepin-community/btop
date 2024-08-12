@@ -29,9 +29,19 @@ Files:     .editorconfig
            .github/workflows/continuous-build-macos.yml
            .github/workflows/continuous-build-freebsd.yml
            .gitignore
+           .github/workflows/cmake-freebsd.yml
+           .github/workflows/cmake-linux.yml
+           .github/workflows/cmake-macos.yml
+           .github/workflows/continuous-build-openbsd.yml
+           .github/workflows/test-snap-can-build.yml
+           .gitmodules
            CHANGELOG.md
            CODE_OF_CONDUCT.md
            CONTRIBUTING.md
+           CMakeLists.txt
+           cmake/Modules/Finddevstat.cmake
+           cmake/Modules/Findelf.cmake
+           cmake/Modules/Findkvm.cmake
            Img/alt.png
            Img/help-menu.png
            Img/logo.png
@@ -68,6 +78,10 @@ Files:     .editorconfig
            src/osx/sensors.hpp
            src/osx/smc.cpp
            src/osx/smc.hpp
+           src/openbsd/btop_collect.cpp
+           src/openbsd/internal.h
+           src/openbsd/sysctlbyname.cpp
+           src/openbsd/sysctlbyname.h
            src/freebsd/btop_collect.cpp
            themes/adapta.theme
            themes/ayu.theme
@@ -95,6 +109,8 @@ Files:     .editorconfig
            themes/paper.theme
            themes/solarized_light.theme
            themes/tomorrow-night.theme
+           themes/adwaita.theme
+           themes/horizon.theme
 Copyright: 2021 Aristocratos (jakob@qvantnet.com)
 License:   Apache-2.0
  Licensed under the Apache License, Version 2.0 (the "License");
@@ -112,12 +128,25 @@ License:   Apache-2.0
  On Debian systems, the complete text of the Apache License Version 2.0
   can be found in `/usr/share/common-licenses/Apache-2.0'.
 
-Files: include/robin_hood.h
-Copyright: 2018-2021, Martin Ankerl <http://martin.ankerl.com>
+Files: include/fmt/LICENSE.rst
+  include/fmt/args.h
+  include/fmt/chrono.h
+  include/fmt/color.h
+  include/fmt/compile.h
+  include/fmt/core.h
+  include/fmt/format-inl.h
+  include/fmt/format.h
+  include/fmt/os.h
+  include/fmt/ostream.h
+  include/fmt/printf.h
+  include/fmt/ranges.h
+  include/fmt/std.h
+  include/fmt/xchar.h
+Copyright: Victor Zverovich and {fmt} contributors
 License: Expat
  Licensed under the MIT License <http://opensource.org/licenses/MIT>.
  SPDX-License-Identifier: MIT
- Copyright (c) 2018-2021 Martin Ankerl <http://martin.ankerl.com>
+ Copyright (c) 2012 - present, Victor Zverovich and {fmt} contributors
  .
  Permission is hereby granted, free of charge, to any person obtaining a copy
  of this software and associated documentation files (the "Software"), to deal

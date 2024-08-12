@@ -4,7 +4,7 @@
    you may not use this file except in compliance with the License.
    You may obtain a copy of the License at
 
-       http://www.apache.org/licenses/LICENSE-2.0
+	   http://www.apache.org/licenses/LICENSE-2.0
 
    Unless required by applicable law or agreed to in writing, software
    distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,6 +16,7 @@ indent = tab
 tab-size = 4
 */
 
+#include <Availability.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/IOKitLib.h>
 #include <arpa/inet.h>
@@ -44,10 +45,8 @@ tab-size = 4
 #include <netinet/in.h> // for inet_ntop
 #include <unistd.h>
 #include <stdexcept>
+#include <utility>
 
-#include <btop_config.hpp>
-#include <btop_shared.hpp>
-#include <btop_tools.hpp>
 #include <cmath>
 #include <fstream>
 #include <numeric>
@@ -55,7 +54,13 @@ tab-size = 4
 #include <regex>
 #include <string>
 
+#include "../btop_config.hpp"
+#include "../btop_shared.hpp"
+#include "../btop_tools.hpp"
+
+#if __MAC_OS_X_VERSION_MIN_REQUIRED > 101504
 #include "sensors.hpp"
+#endif
 #include "smc.hpp"
 
 using std::clamp, std::string_literals::operator""s, std::cmp_equal, std::cmp_less, std::cmp_greater;
@@ -69,10 +74,9 @@ using namespace Tools;
 namespace Cpu {
 	vector<long long> core_old_totals;
 	vector<long long> core_old_idles;
-	vector<string> available_fields = {"total"};
+	vector<string> available_fields = {"Auto", "total"};
 	vector<string> available_sensors = {"Auto"};
 	cpu_info current_cpu;
-	fs::path freq_path = "/sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq";
 	bool got_sensors = false, cpu_temp_only = false;
 	int core_offset = 0;
 
@@ -95,7 +99,7 @@ namespace Cpu {
 
 	string cpu_sensor;
 	vector<string> core_sensors;
-	unordered_flat_map<int, int> core_mapping;
+	std::unordered_map<int, int> core_mapping;
 }  // namespace Cpu
 
 namespace Mem {
@@ -128,7 +132,7 @@ namespace Shared {
 		}
 
 		size_t physicalCoreCountSize = sizeof(physicalCoreCount);
-		if (sysctlbyname("hw.physicalcpu", &physicalCoreCount, &physicalCoreCountSize, NULL, 0) < 0) {
+		if (sysctlbyname("hw.physicalcpu", &physicalCoreCount, &physicalCoreCountSize, nullptr, 0) < 0) {
 			Logger::error("Could not get physical core count");
 		}
 
@@ -154,7 +158,7 @@ namespace Shared {
 
 		int64_t memsize = 0;
 		size_t size = sizeof(memsize);
-		if (sysctlbyname("hw.memsize", &memsize, &size, NULL, 0) < 0) {
+		if (sysctlbyname("hw.memsize", &memsize, &size, nullptr, 0) < 0) {
 			Logger::warning("Could not get memory size");
 		}
 		totalMem = memsize;
@@ -163,7 +167,6 @@ namespace Shared {
 		arg_max = sysconf(_SC_ARG_MAX);
 
 		//? Init for namespace Cpu
-		if (not fs::exists(Cpu::freq_path) or access(Cpu::freq_path.c_str(), R_OK) == -1) Cpu::freq_path.clear();
 		Cpu::current_cpu.core_percent.insert(Cpu::current_cpu.core_percent.begin(), Shared::coreCount, {});
 		Cpu::current_cpu.temp.insert(Cpu::current_cpu.temp.begin(), Shared::coreCount + 1, {});
 		Cpu::core_old_totals.insert(Cpu::core_old_totals.begin(), Shared::coreCount, 0);
@@ -192,20 +195,20 @@ namespace Cpu {
 
 	const array<string, 10> time_names = {"user", "nice", "system", "idle"};
 
-	unordered_flat_map<string, long long> cpu_old = {
-	    {"totals", 0},
-	    {"idles", 0},
-	    {"user", 0},
-	    {"nice", 0},
-	    {"system", 0},
-	    {"idle", 0}
+	std::unordered_map<string, long long> cpu_old = {
+		{"totals", 0},
+		{"idles", 0},
+		{"user", 0},
+		{"nice", 0},
+		{"system", 0},
+		{"idle", 0}
 	};
 
 	string get_cpuName() {
 		string name;
 		char buffer[1024];
 		size_t size = sizeof(buffer);
-		if (sysctlbyname("machdep.cpu.brand_string", &buffer, &size, NULL, 0) < 0) {
+		if (sysctlbyname("machdep.cpu.brand_string", &buffer, &size, nullptr, 0) < 0) {
 			Logger::error("Failed to get CPU name");
 			return name;
 		}
@@ -237,7 +240,7 @@ namespace Cpu {
 				name += n + ' ';
 			}
 			name.pop_back();
-				for (const auto& replace : {"Processor", "CPU", "(R)", "(TM)", "Intel", "AMD", "Core"}) {
+				for (const auto& replace : {"Processor", "CPU", "(R)", "(TM)", "Intel", "AMD", "Apple", "Core"}) {
 					name = s_replace(name, replace, "");
 					name = s_replace(name, "  ", " ");
 				}
@@ -251,6 +254,7 @@ namespace Cpu {
 		Logger::debug("get_sensors(): show_coretemp=" + std::to_string(Config::getB("show_coretemp")) + " check_temp=" + std::to_string(Config::getB("check_temp")));
 		got_sensors = false;
 		if (Config::getB("show_coretemp") and Config::getB("check_temp")) {
+#if __MAC_OS_X_VERSION_MIN_REQUIRED > 101504
 			ThermalSensors sensors;
 			if (sensors.getSensors() > 0) {
 				Logger::debug("M1 sensors found");
@@ -258,6 +262,7 @@ namespace Cpu {
 				cpu_temp_only = true;
 				macM1 = true;
 			} else {
+#endif
 				// try SMC (intel)
 				Logger::debug("checking intel");
 				SMCConnection smcCon;
@@ -282,7 +287,9 @@ namespace Cpu {
 					// ignore, we don't have temp
 					got_sensors = false;
 				}
+#if __MAC_OS_X_VERSION_MIN_REQUIRED > 101504
 			}
+#endif
 		}
 		return got_sensors;
 	}
@@ -291,11 +298,12 @@ namespace Cpu {
 		current_cpu.temp_max = 95;  // we have no idea how to get the critical temp
 		try {
 			if (macM1) {
+#if __MAC_OS_X_VERSION_MIN_REQUIRED > 101504
 				ThermalSensors sensors;
 				current_cpu.temp.at(0).push_back(sensors.getSensors());
 				if (current_cpu.temp.at(0).size() > 20)
 					current_cpu.temp.at(0).pop_front();
-
+#endif
 			} else {
 				SMCConnection smcCon;
 				int threadsPerCore = Shared::coreCount / Shared::physicalCoreCount;
@@ -323,15 +331,15 @@ namespace Cpu {
 
 		int mib[] = {CTL_HW, HW_CPU_FREQ};
 
-		if (sysctl(mib, 2, &freq, &size, NULL, 0) < 0) {
+		if (sysctl(mib, 2, &freq, &size, nullptr, 0) < 0) {
 			// this fails on Apple Silicon macs. Apparently you're not allowed to know
 			return "";
 		}
 		return std::to_string(freq / 1000.0 / 1000.0 / 1000.0).substr(0, 3);
 	}
 
-	auto get_core_mapping() -> unordered_flat_map<int, int> {
-		unordered_flat_map<int, int> core_map;
+	auto get_core_mapping() -> std::unordered_map<int, int> {
+		std::unordered_map<int, int> core_map;
 		if (cpu_temp_only) return core_map;
 
 		natural_t cpu_count;
@@ -442,23 +450,19 @@ namespace Cpu {
 		return {percent, seconds, status};
 	}
 
-    auto collect(bool no_update) -> cpu_info & {
+	auto collect(bool no_update) -> cpu_info & {
 		if (Runner::stopping or (no_update and not current_cpu.cpu_percent.at("total").empty()))
 			return current_cpu;
 		auto &cpu = current_cpu;
 
-		double avg[3];
-
-		if (getloadavg(avg, sizeof(avg)) < 0) {
+		if (getloadavg(cpu.load_avg.data(), cpu.load_avg.size()) < 0) {
 			Logger::error("failed to get load averages");
 		}
-
-		cpu.load_avg = { (float)avg[0], (float)avg[1], (float)avg[2]};
 
 		natural_t cpu_count;
 		natural_t i;
 		kern_return_t error;
-		processor_cpu_load_info_data_t *cpu_load_info = NULL;
+		processor_cpu_load_info_data_t *cpu_load_info = nullptr;
 
 		MachProcessorInfo info{};
 		error = host_processor_info(mach_host_self(), PROCESSOR_CPU_LOAD_INFO, &cpu_count, &info.info_array, &info.info_count);
@@ -596,7 +600,7 @@ namespace Mem {
 			io_object_t &object;
 	};
 
-	void collect_disk(unordered_flat_map<string, disk_info> &disks, unordered_flat_map<string, string> &mapping) {
+	void collect_disk(std::unordered_map<string, disk_info> &disks, std::unordered_map<string, string> &mapping) {
 		io_registry_entry_t drive;
 		io_iterator_t drive_list;
 
@@ -607,7 +611,7 @@ namespace Mem {
 		}
 		/* Get the list of all drive objects. */
 		if (IOServiceGetMatchingServices(libtop_master_port,
-		                                 IOServiceMatching("IOMediaBSDClient"), &drive_list)) {
+										 IOServiceMatching("IOMediaBSDClient"), &drive_list)) {
 			Logger::error("Error in IOServiceGetMatchingServices()");
 			return;
 		}
@@ -667,15 +671,15 @@ namespace Mem {
 		}
 	}
 
-    auto collect(bool no_update) -> mem_info & {
+	auto collect(bool no_update) -> mem_info & {
 		if (Runner::stopping or (no_update and not current_mem.percent.at("used").empty()))
 			return current_mem;
 
-        auto show_swap = Config::getB("show_swap");
-        auto show_disks = Config::getB("show_disks");
-        auto swap_disk = Config::getB("swap_disk");
+		auto show_swap = Config::getB("show_swap");
+		auto show_disks = Config::getB("show_disks");
+		auto swap_disk = Config::getB("swap_disk");
 		auto &mem = current_mem;
-        static bool snapped = (getenv("BTOP_SNAPPED") != NULL);
+		static bool snapped = (getenv("BTOP_SNAPPED") != nullptr);
 
 		vm_statistics64 p;
 		mach_msg_type_number_t info_size = HOST_VM_INFO64_COUNT;
@@ -690,7 +694,7 @@ namespace Mem {
 
 		struct xsw_usage swap;
 		size_t len = sizeof(struct xsw_usage);
-		if (sysctl(mib, 2, &swap, &len, NULL, 0) == 0) {
+		if (sysctl(mib, 2, &swap, &len, nullptr, 0) == 0) {
 			mem.stats.at("swap_total") = swap.xsu_total;
 			mem.stats.at("swap_free") = swap.xsu_avail;
 			mem.stats.at("swap_used") = swap.xsu_used;
@@ -713,11 +717,11 @@ namespace Mem {
 		}
 
 		if (show_disks) {
-			unordered_flat_map<string, string> mapping;  // keep mapping from device -> mountpoint, since IOKit doesn't give us the mountpoint
+			std::unordered_map<string, string> mapping;  // keep mapping from device -> mountpoint, since IOKit doesn't give us the mountpoint
 			double uptime = system_uptime();
 			auto &disks_filter = Config::getS("disks_filter");
 			bool filter_exclude = false;
-            // auto only_physical = Config::getB("only_physical");
+			// auto only_physical = Config::getB("only_physical");
 			auto &disks = mem.disks;
 			vector<string> filter;
 			if (not disks_filter.empty()) {
@@ -826,13 +830,13 @@ namespace Mem {
 }  // namespace Mem
 
 namespace Net {
-	unordered_flat_map<string, net_info> current_net;
+	std::unordered_map<string, net_info> current_net;
 	net_info empty_net = {};
 	vector<string> interfaces;
 	string selected_iface;
 	int errors = 0;
-	unordered_flat_map<string, uint64_t> graph_max = {{"download", {}}, {"upload", {}}};
-	unordered_flat_map<string, array<int, 2>> max_count = {{"download", {}}, {"upload", {}}};
+	std::unordered_map<string, uint64_t> graph_max = {{"download", {}}, {"upload", {}}};
+	std::unordered_map<string, array<int, 2>> max_count = {{"download", {}}, {"upload", {}}};
 	bool rescale = true;
 	uint64_t timestamp = 0;
 
@@ -847,11 +851,11 @@ namespace Net {
 		auto operator()() -> struct ifaddrs * { return ifaddr; }
 	};
 
-    auto collect(bool no_update) -> net_info & {
+	auto collect(bool no_update) -> net_info & {
 		auto &net = current_net;
 		auto &config_iface = Config::getS("net_iface");
-        auto net_sync = Config::getB("net_sync");
-        auto net_auto = Config::getB("net_auto");
+		auto net_sync = Config::getB("net_sync");
+		auto net_auto = Config::getB("net_auto");
 		auto new_timestamp = time_ms();
 
 		if (not no_update and errors < 3) {
@@ -871,8 +875,8 @@ namespace Net {
 			string ipv4, ipv6;
 
 			//? Iteration over all items in getifaddrs() list
-			for (auto *ifa = if_wrap(); ifa != NULL; ifa = ifa->ifa_next) {
-				if (ifa->ifa_addr == NULL) continue;
+			for (auto *ifa = if_wrap(); ifa != nullptr; ifa = ifa->ifa_next) {
+				if (ifa->ifa_addr == nullptr) continue;
 				family = ifa->ifa_addr->sa_family;
 				const auto &iface = ifa->ifa_name;
 				//? Update available interfaces vector and get status of interface
@@ -888,7 +892,7 @@ namespace Net {
 				//? Get IPv4 address
 				if (family == AF_INET) {
 					if (net[iface].ipv4.empty()) {
-						if (NULL != inet_ntop(family, &(reinterpret_cast<struct sockaddr_in*>(ifa->ifa_addr)->sin_addr), ip, IPBUFFER_MAXSIZE)) {
+						if (nullptr != inet_ntop(family, &(reinterpret_cast<struct sockaddr_in*>(ifa->ifa_addr)->sin_addr), ip, IPBUFFER_MAXSIZE)) {
 							net[iface].ipv4 = ip;
 						} else {
 							int errsv = errno;
@@ -899,7 +903,7 @@ namespace Net {
 				//? Get IPv6 address
 				else if (family == AF_INET6) {
 					if (net[iface].ipv6.empty()) {
-						if (NULL != inet_ntop(family, &(reinterpret_cast<struct sockaddr_in6*>(ifa->ifa_addr)->sin6_addr), ip, IPBUFFER_MAXSIZE)) {
+						if (nullptr != inet_ntop(family, &(reinterpret_cast<struct sockaddr_in6*>(ifa->ifa_addr)->sin6_addr), ip, IPBUFFER_MAXSIZE)) {
 							net[iface].ipv6 = ip;
 						} else {
 							int errsv = errno;
@@ -909,18 +913,18 @@ namespace Net {
 				} // else, ignoring family==AF_LINK (see man 3 getifaddrs)
 			}
 
-			unordered_flat_map<string, std::tuple<uint64_t, uint64_t>> ifstats;
+			std::unordered_map<string, std::tuple<uint64_t, uint64_t>> ifstats;
 			int mib[] = {CTL_NET, PF_ROUTE, 0, 0, NET_RT_IFLIST2, 0};
 			size_t len;
-			if (sysctl(mib, 6, NULL, &len, NULL, 0) < 0) {
+			if (sysctl(mib, 6, nullptr, &len, nullptr, 0) < 0) {
 				Logger::error("failed getting network interfaces");
 			} else {
 				std::unique_ptr<char[]> buf(new char[len]);
-				if (sysctl(mib, 6, buf.get(), &len, NULL, 0) < 0) {
+				if (sysctl(mib, 6, buf.get(), &len, nullptr, 0) < 0) {
 					Logger::error("failed getting network interfaces");
 				} else {
 					char *lim = buf.get() + len;
-					char *next = NULL;
+					char *next = nullptr;
 					for (next = buf.get(); next < lim;) {
 						struct if_msghdr *ifm = (struct if_msghdr *)next;
 						next += ifm->ifm_msglen;
@@ -983,7 +987,6 @@ namespace Net {
 					else
 						it++;
 				}
-				net.compact();
 			}
 
 			timestamp = new_timestamp;
@@ -1004,7 +1007,7 @@ namespace Net {
 				auto sorted_interfaces = interfaces;
 				rng::sort(sorted_interfaces, [&](const auto &a, const auto &b) {
 					return cmp_greater(net.at(a).stat["download"].total + net.at(a).stat["upload"].total,
-					                   net.at(b).stat["download"].total + net.at(b).stat["upload"].total);
+									   net.at(b).stat["download"].total + net.at(b).stat["upload"].total);
 				});
 				selected_iface.clear();
 				//? Try to set to a connected interface
@@ -1026,9 +1029,9 @@ namespace Net {
 			for (const auto &dir : {"download", "upload"}) {
 				for (const auto &sel : {0, 1}) {
 					if (rescale or max_count[dir][sel] >= 5) {
-						const uint64_t avg_speed = (net[selected_iface].bandwidth[dir].size() > 5
-						                                ? std::accumulate(net.at(selected_iface).bandwidth.at(dir).rbegin(), net.at(selected_iface).bandwidth.at(dir).rbegin() + 5, 0) / 5
-						                                : net[selected_iface].stat[dir].speed);
+						const long long avg_speed = (net[selected_iface].bandwidth[dir].size() > 5
+														? std::accumulate(net.at(selected_iface).bandwidth.at(dir).rbegin(), net.at(selected_iface).bandwidth.at(dir).rbegin() + 5, 0ll) / 5
+														: net[selected_iface].stat[dir].speed);
 						graph_max[dir] = max(uint64_t(avg_speed * (sel == 0 ? 1.3 : 3.0)), (uint64_t)10 << 10);
 						max_count[dir][0] = max_count[dir][1] = 0;
 						redraw = true;
@@ -1054,7 +1057,7 @@ namespace Net {
 namespace Proc {
 
 	vector<proc_info> current_procs;
-	unordered_flat_map<string, string> uid_user;
+	std::unordered_map<string, string> uid_user;
 	string current_sort;
 	string current_filter;
 	bool current_rev = false;
@@ -1097,7 +1100,7 @@ namespace Proc {
 
 		//? Process runtime : current time - start time (both in unix time - seconds since epoch)
 		struct timeval currentTime;
-		gettimeofday(&currentTime, NULL);
+		gettimeofday(&currentTime, nullptr);
 		detailed.elapsed = sec_to_dhms(currentTime.tv_sec - (detailed.entry.cpu_s / 1'000'000));
 		if (detailed.elapsed.size() > 8) detailed.elapsed.resize(detailed.elapsed.size() - 3);
 
@@ -1129,17 +1132,17 @@ namespace Proc {
 	}
 
 	//* Collects and sorts process information from /proc
-    auto collect(bool no_update) -> vector<proc_info> & {
+	auto collect(bool no_update) -> vector<proc_info> & {
 		const auto &sorting = Config::getS("proc_sorting");
-        auto reverse = Config::getB("proc_reversed");
+		auto reverse = Config::getB("proc_reversed");
 		const auto &filter = Config::getS("proc_filter");
-        auto per_core = Config::getB("proc_per_core");
-        auto tree = Config::getB("proc_tree");
-        auto show_detailed = Config::getB("show_detailed");
+		auto per_core = Config::getB("proc_per_core");
+		auto tree = Config::getB("proc_tree");
+		auto show_detailed = Config::getB("show_detailed");
 		const size_t detailed_pid = Config::getI("detailed_pid");
 		bool should_filter = current_filter != filter;
 		if (should_filter) current_filter = filter;
-        bool sorted_change = (sorting != current_sort or reverse != current_rev or should_filter);
+		bool sorted_change = (sorting != current_sort or reverse != current_rev or should_filter);
 		if (sorted_change) {
 			current_sort = sorting;
 			current_rev = reverse;
@@ -1159,7 +1162,7 @@ namespace Proc {
 			{  //* Get CPU totals
 				natural_t cpu_count;
 				kern_return_t error;
-				processor_cpu_load_info_data_t *cpu_load_info = NULL;
+				processor_cpu_load_info_data_t *cpu_load_info = nullptr;
 				MachProcessorInfo info{};
 				error = host_processor_info(mach_host_self(), PROCESSOR_CPU_LOAD_INFO, &cpu_count, &info.info_array, &info.info_count);
 				if (error != KERN_SUCCESS) {
@@ -1181,13 +1184,13 @@ namespace Proc {
 			size_t size = 0;
 			const auto timeNow = time_micros();
 
-			if (sysctl(mib, 4, NULL, &size, NULL, 0) < 0 || size == 0) {
+			if (sysctl(mib, 4, nullptr, &size, nullptr, 0) < 0 || size == 0) {
 				Logger::error("Unable to get size of kproc_infos");
 			}
 			uint64_t cpu_t = 0;
 
 			std::unique_ptr<kinfo_proc[]> processes(new kinfo_proc[size / sizeof(kinfo_proc)]);
-			if (sysctl(mib, 4, processes.get(), &size, NULL, 0) == 0) {
+			if (sysctl(mib, 4, processes.get(), &size, nullptr, 0) == 0) {
 				size_t count = size / sizeof(struct kinfo_proc);
 				for (size_t i = 0; i < count; i++) {  //* iterate over all processes in kinfo_proc
 					struct kinfo_proc& kproc = processes.get()[i];
@@ -1218,7 +1221,7 @@ namespace Proc {
 							std::unique_ptr<char[]> proc_chars(new char[Shared::arg_max]);
 							int mib[] = {CTL_KERN, KERN_PROCARGS2, (int)pid};
 							size_t argmax = Shared::arg_max;
-							if (sysctl(mib, 3, proc_chars.get(), &argmax, NULL, 0) == 0) {
+							if (sysctl(mib, 3, proc_chars.get(), &argmax, nullptr, 0) == 0) {
 								int argc = 0;
 								memcpy(&argc, &proc_chars.get()[0], sizeof(argc));
 								std::string_view proc_args(proc_chars.get(), argmax);
@@ -1381,8 +1384,8 @@ namespace Tools {
 		struct timeval ts, currTime;
 		std::size_t len = sizeof(ts);
 		int mib[2] = {CTL_KERN, KERN_BOOTTIME};
-		if (sysctl(mib, 2, &ts, &len, NULL, 0) != -1) {
-			gettimeofday(&currTime, NULL);
+		if (sysctl(mib, 2, &ts, &len, nullptr, 0) != -1) {
+			gettimeofday(&currTime, nullptr);
 			return currTime.tv_sec - ts.tv_sec;
 		}
 		return 0.0;
