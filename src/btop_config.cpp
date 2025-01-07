@@ -199,6 +199,8 @@ namespace Config {
 
 		{"selected_battery",	"#* Which battery to use if multiple are present. \"Auto\" for auto detection."},
 
+		{"show_battery_watts",	"#* Show power stats of battery next to charge indicator."},
+
 		{"log_level", 			"#* Set loglevel for \"~/.config/btop/btop.log\" levels are: \"ERROR\" \"WARNING\" \"INFO\" \"DEBUG\".\n"
 								"#* The level set includes all lower levels, i.e. \"DEBUG\" will show all logging info."},
 	#ifdef GPU_SUPPORT
@@ -293,6 +295,7 @@ namespace Config {
 		{"net_auto", true},
 		{"net_sync", true},
 		{"show_battery", true},
+		{"show_battery_watts", true},
 		{"vim_keys", false},
 		{"tty_mode", false},
 		{"disk_free_priv", false},
@@ -303,7 +306,8 @@ namespace Config {
 		{"proc_aggregate", false},
 	#ifdef GPU_SUPPORT
 		{"nvml_measure_pcie_speeds", true},
-		{"gpu_mirror_graph", true},
+		{"rsmi_measure_pcie_speeds", true},
+		{"gpu_mirror_graph", true}
 	#endif
 	};
 	std::unordered_map<std::string_view, bool> boolsTmp;
@@ -317,7 +321,7 @@ namespace Config {
 		{"selected_depth", 0},
 		{"proc_start", 0},
 		{"proc_selected", 0},
-		{"proc_last_selected", 0},
+		{"proc_last_selected", 0}
 	};
 	std::unordered_map<std::string_view, int> intsTmp;
 
@@ -435,7 +439,7 @@ namespace Config {
 	}
 
 	//* Apply selected preset
-	void apply_preset(const string& preset) {
+	bool apply_preset(const string& preset) {
 		string boxes;
 
 		for (const auto& box : ssplit(preset, ',')) {
@@ -446,7 +450,7 @@ namespace Config {
 
 		auto min_size = Term::get_min_size(boxes);
 		if (Term::width < min_size.at(0) or Term::height < min_size.at(1)) {
-			return;
+			return false;
 		}
 
 		for (const auto& box : ssplit(preset, ',')) {
@@ -457,7 +461,11 @@ namespace Config {
 			set("graph_symbol_" + vals.at(0), vals.at(2));
 		}
 
-		if (check_boxes(boxes)) set("shown_boxes", boxes);
+		if (set_boxes(boxes)) {
+			set("shown_boxes", boxes);
+			return true;
+		}
+		return false;
 	}
 
 	void lock() {
@@ -497,6 +505,11 @@ namespace Config {
 		return false;
 	}
 
+	bool validBoxSizes(const string& boxes) {
+		auto min_size = Term::get_min_size(boxes);
+		return (Term::width >= min_size.at(0) and Term::height >= min_size.at(1));
+	}
+
 	bool stringValid(const std::string_view name, const string& value) {
 		if (name == "log_level" and not v_contains(Logger::log_levels, value))
 			validError = "Invalid log_level: " + value;
@@ -507,8 +520,16 @@ namespace Config {
 		else if (name.starts_with("graph_symbol_") and (value != "default" and not v_contains(valid_graph_symbols, value)))
 			validError = fmt::format("Invalid graph symbol identifier for {}: {}", name, value);
 
-		else if (name == "shown_boxes" and not Global::init_conf and not value.empty() and not check_boxes(value))
-			validError = "Invalid box name(s) in shown_boxes!";
+		else if (name == "shown_boxes" and not Global::init_conf) {
+			if (value.empty())
+				validError = "No boxes selected!";
+			else if (not validBoxSizes(value))
+				validError = "Terminal too small to display entered boxes!";
+			else if (not set_boxes(value))
+				validError = "Invalid box name(s) in shown_boxes!";
+			else
+				return true;
+		}
 
 	#ifdef GPU_SUPPORT
 		else if (name == "show_gpu_info" and not v_contains(show_gpu_values, value))
@@ -613,14 +634,14 @@ namespace Config {
 		locked = false;
 	}
 
-	bool check_boxes(const string& boxes) {
+	bool set_boxes(const string& boxes) {
 		auto new_boxes = ssplit(boxes);
 		for (auto& box : new_boxes) {
 			if (not v_contains(valid_boxes, box)) return false;
 		#ifdef GPU_SUPPORT
 			if (box.starts_with("gpu")) {
-				size_t gpu_num = stoi(box.substr(3)) + 1;
-				if (std::cmp_greater(gpu_num, Gpu::gpu_names.size())) return false;
+				int gpu_num = stoi(box.substr(3)) + 1;
+				if (gpu_num > Gpu::count) return false;
 			}
 		#endif
 		}
@@ -628,7 +649,7 @@ namespace Config {
 		return true;
 	}
 
-	void toggle_box(const string& box) {
+	bool toggle_box(const string& box) {
 		auto old_boxes = current_boxes;
 		auto box_pos = rng::find(current_boxes, box);
 		if (box_pos == current_boxes.end())
@@ -646,10 +667,11 @@ namespace Config {
 
 		if (Term::width < min_size.at(0) or Term::height < min_size.at(1)) {
 			current_boxes = old_boxes;
-			return;
+			return false;
 		}
 
 		Config::set("shown_boxes", new_boxes);
+		return true;
 	}
 
 	void load(const fs::path& conf_file, vector<string>& load_warnings) {
@@ -729,9 +751,9 @@ namespace Config {
 		if (geteuid() != Global::real_uid and seteuid(Global::real_uid) != 0) return;
 		std::ofstream cwrite(conf_file, std::ios::trunc);
 		if (cwrite.good()) {
-			cwrite << "#? Config file for btop v. " << Global::Version;
+			cwrite << "#? Config file for btop v. " << Global::Version << "\n";
 			for (auto [name, description] : descriptions) {
-				cwrite 	<< "\n\n" << (description.empty() ? "" : description + "\n")
+				cwrite << "\n" << (description.empty() ? "" : description + "\n")
 						<< name << " = ";
 				if (strings.contains(name))
 					cwrite << "\"" << strings.at(name) << "\"";
@@ -739,6 +761,7 @@ namespace Config {
 					cwrite << ints.at(name);
 				else if (bools.contains(name))
 					cwrite << (bools.at(name) ? "True" : "False");
+				cwrite << "\n";
 			}
 		}
 	}

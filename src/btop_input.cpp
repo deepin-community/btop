@@ -41,6 +41,7 @@ namespace Input {
 	//* Map for translating key codes to readable values
 	const std::unordered_map<string, string> Key_escapes = {
 		{"\033",	"escape"},
+		{"\x12",	"ctrl_r"},
 		{"\n",		"enter"},
 		{" ",		"space"},
 		{"\x7f",	"backspace"},
@@ -231,7 +232,7 @@ namespace Input {
 					auto intKey = stoi(key);
 				#ifdef GPU_SUPPORT
 					static const array<string, 10> boxes = {"gpu5", "cpu", "mem", "net", "proc", "gpu0", "gpu1", "gpu2", "gpu3", "gpu4"};
-					if ((intKey == 0 and Gpu::gpu_names.size() < 5) or (intKey >= 5 and std::cmp_less(Gpu::gpu_names.size(), intKey - 4)))
+					if ((intKey == 0 and Gpu::count < 5) or (intKey >= 5 and intKey - 4 > Gpu::count))
 						return;
 				#else
 				static const array<string, 10> boxes = {"", "cpu", "mem", "net", "proc"};
@@ -239,14 +240,18 @@ namespace Input {
 						return;
 				#endif
 					atomic_wait(Runner::active);
-					Config::current_preset = -1;
 
-					Config::toggle_box(boxes.at(intKey));
+					if (not Config::toggle_box(boxes.at(intKey))) {
+						Menu::show(Menu::Menus::SizeError);
+						return;
+					}
+					Config::current_preset = -1;
 					Draw::calcSizes();
 					Runner::run("all", false, true);
 					return;
 				}
 				else if (is_in(key, "p", "P") and Config::preset_list.size() > 1) {
+					const auto old_preset = Config::current_preset;
 					if (key == "p") {
 						if (++Config::current_preset >= (int)Config::preset_list.size()) Config::current_preset = 0;
 					}
@@ -254,12 +259,18 @@ namespace Input {
 						if (--Config::current_preset < 0) Config::current_preset = Config::preset_list.size() - 1;
 					}
 					atomic_wait(Runner::active);
-					Config::apply_preset(Config::preset_list.at(Config::current_preset));
+					if (not Config::apply_preset(Config::preset_list.at(Config::current_preset))) {
+						Menu::show(Menu::Menus::SizeError);
+						Config::current_preset = old_preset;
+						return;
+					}
 					Draw::calcSizes();
 					Runner::run("all", false, true);
 					return;
-				}
-				else
+				} else if (is_in(key, "ctrl_r")) {
+					kill(getpid(), SIGUSR2);
+					return;
+				} else
 					keep_going = true;
 
 				if (not keep_going) return;
