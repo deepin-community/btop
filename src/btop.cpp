@@ -52,7 +52,9 @@ tab-size = 4
 #include "btop_theme.hpp"
 #include "btop_draw.hpp"
 #include "btop_menu.hpp"
+#include "config.h"
 #include "fmt/core.h"
+#include "fmt/ostream.h"
 
 using std::atomic;
 using std::cout;
@@ -78,7 +80,7 @@ namespace Global {
 		{"#801414", "██████╔╝   ██║   ╚██████╔╝██║        ╚═╝    ╚═╝"},
 		{"#000000", "╚═════╝    ╚═╝    ╚═════╝ ╚═╝"},
 	};
-	const string Version = "1.3.0";
+	const string Version = "1.4.0";
 
 	int coreCount;
 	string overlay;
@@ -108,6 +110,7 @@ namespace Global {
 	atomic<bool> should_sleep (false);
 	atomic<bool> _runner_started (false);
 	atomic<bool> init_conf (false);
+	atomic<bool> reload_conf (false);
 
 	bool arg_tty{};
 	bool arg_low_color{};
@@ -115,29 +118,59 @@ namespace Global {
 	int arg_update = 0;
 }
 
+static void print_version() {
+	if constexpr (GIT_COMMIT.empty()) {
+		fmt::println("btop version: {}", Global::Version);
+	} else {
+		fmt::println("btop version: {}+{}", Global::Version, GIT_COMMIT);
+	}
+}
+
+static void print_version_with_build_info() {
+	print_version();
+	fmt::println("Compiled with: {} ({})\nConfigured with: {}", COMPILER, COMPILER_VERSION, CONFIGURE_COMMAND);
+}
+
+static void print_usage() {
+	fmt::println("\033[1;4mUsage:\033[0;1m btop\033[0m [OPTIONS]\n");
+}
+
+static void print_help() {
+	print_usage();
+	fmt::println(
+			"{0}{1}Options:{2}\n"
+			"  {0}-h,  --help          {2}show this help message and exit\n"
+			"  {0}-v,  --version       {2}show version info and exit\n"
+			"  {0}-lc, --low-color     {2}disable truecolor, converts 24-bit colors to 256-color\n"
+			"  {0}-t,  --tty_on        {2}force (ON) tty mode, max 16 colors and tty friendly graph symbols\n"
+			"  {0}+t,  --tty_off       {2}force (OFF) tty mode\n"
+			"  {0}-p,  --preset <id>   {2}start with preset, integer value between 0-9\n"
+			"  {0}-u,  --update <ms>   {2}set the program update rate in milliseconds\n"
+			"  {0}     --utf-force     {2}force start even if no UTF-8 locale was detected\n"
+			"  {0}     --debug         {2}start in DEBUG mode: shows microsecond timer for information collect\n"
+			"  {0}                     {2}and screen draw functions and sets loglevel to DEBUG",
+			"\033[1m", "\033[4m", "\033[0m"
+	);
+}
+
+static void print_help_hint() {
+	fmt::println("For more information, try '{0}--help{1}'", "\033[1m", "\033[0m");
+}
+
 //* A simple argument parser
 void argumentParser(const int argc, char **argv) {
 	for(int i = 1; i < argc; i++) {
 		const string argument = argv[i];
 		if (is_in(argument, "-h", "--help")) {
-			fmt::println(
-					"usage: btop [-h] [-v] [-/+t] [-p <id>] [-u <ms>] [--utf-force] [--debug]\n\n"
-					"optional arguments:\n"
-					"  -h, --help            show this help message and exit\n"
-					"  -v, --version         show version info and exit\n"
-					"  -lc, --low-color      disable truecolor, converts 24-bit colors to 256-color\n"
-					"  -t, --tty_on          force (ON) tty mode, max 16 colors and tty friendly graph symbols\n"
-					"  +t, --tty_off         force (OFF) tty mode\n"
-					"  -p, --preset <id>     start with preset, integer value between 0-9\n"
-					"  -u, --update <ms>     set the program update rate in milliseconds\n"
-					"  --utf-force           force start even if no UTF-8 locale was detected\n"
-					"  --debug               start in DEBUG mode: shows microsecond timer for information collect\n"
-					"                        and screen draw functions and sets loglevel to DEBUG"
-			);
+		  print_help();
 			exit(0);
 		}
-		else if (is_in(argument, "-v", "--version")) {
-			fmt::println("btop version: {}", Global::Version);
+		else if (is_in(argument, "-v")) {
+			print_version();
+			exit(0);
+		}
+		else if (is_in(argument, "--version")) {
+			print_version_with_build_info();
 			exit(0);
 		}
 		else if (is_in(argument, "-lc", "--low-color")) {
@@ -153,27 +186,35 @@ void argumentParser(const int argc, char **argv) {
 		}
 		else if (is_in(argument, "-p", "--preset")) {
 			if (++i >= argc) {
-				fmt::println("ERROR: Preset option needs an argument.");
+				fmt::println("{0}error:{1} Preset option needs an argument\n", "\033[1;31m", "\033[0m");
+				print_usage();
+				print_help_hint();
 				exit(1);
 			}
 			else if (const string val = argv[i]; isint(val) and val.size() == 1) {
 				Global::arg_preset = std::clamp(stoi(val), 0, 9);
 			}
 			else {
-				fmt::println("ERROR: Preset option only accepts an integer value between 0-9.");
+				fmt::println("{0}error: {1}Preset option only accepts an integer value between 0-9\n", "\033[1;31m", "\033[0m");
+				print_usage();
+				print_help_hint();
 				exit(1);
 			}
 		}
 		else if (is_in(argument, "-u", "--update")) {
 			if (++i >= argc) {
-				fmt::println("ERROR: Update option needs an argument");
+				fmt::println("{0}error:{1} Update option needs an argument\n", "\033[1;31m", "\033[0m");
+				print_usage();
+				print_help_hint();
 				exit(1);
 			}
 			const std::string value = argv[i];
 			if (isint(value)) {
 				Global::arg_update = std::clamp(std::stoi(value), 100, Config::ONE_DAY_MILLIS);
 			} else {
-				fmt::println("ERROR: Invalid update rate");
+				fmt::println("{0}error:{1} Invalid update rate\n", "\033[1;31m", "\033[0m");
+				print_usage();
+				print_help_hint();
 				exit(1);
 			}
 		}
@@ -182,8 +223,9 @@ void argumentParser(const int argc, char **argv) {
 		else if (argument == "--debug")
 			Global::debug = true;
 		else {
-			fmt::println(" Unknown argument: {}\n"
-				" Use -h or --help for help.", argument);
+			fmt::println("{0}error:{2} unexpected argument '{1}{3}{2}' found\n", "\033[1;31m", "\033[33m", "\033[0m", argument);
+			print_usage();
+			print_help_hint();
 			exit(1);
 		}
 	}
@@ -247,7 +289,7 @@ void term_resize(bool force) {
 				else if (key.size() == 1 and isint(key)) {
 					auto intKey = stoi(key);
 				#ifdef GPU_SUPPORT
-					if ((intKey == 0 and Gpu::gpu_names.size() >= 5) or (intKey >= 5 and std::cmp_greater_equal(Gpu::gpu_names.size(), intKey - 4))) {
+					if ((intKey == 0 and Gpu::count >= 5) or (intKey >= 5 and intKey - 4 <= Gpu::count)) {
 				#else
 					if (intKey > 0 and intKey < 5) {
 				#endif
@@ -273,7 +315,7 @@ void clean_quit(int sig) {
 	Global::quitting = true;
 	Runner::stop();
 	if (Global::_runner_started) {
-	#if defined __APPLE__ || defined __OpenBSD__
+	#if defined __APPLE__ || defined __OpenBSD__ || defined __NetBSD__
 		if (pthread_join(Runner::runner_id, nullptr) != 0) {
 			Logger::warning("Failed to join _runner thread on exit!");
 			pthread_cancel(Runner::runner_id);
@@ -309,7 +351,7 @@ void clean_quit(int sig) {
 
 	const auto excode = (sig != -1 ? sig : 0);
 
-#if defined __APPLE__ || defined __OpenBSD__
+#if defined __APPLE__ || defined __OpenBSD__ || defined __NetBSD__
 	_Exit(excode);
 #else
 	quick_exit(excode);
@@ -364,7 +406,36 @@ void _signal_handler(const int sig) {
 		case SIGUSR1:
 			// Input::poll interrupt
 			break;
+		case SIGUSR2:
+			Global::reload_conf = true;
+			Input::interrupt();
+			break;
 	}
+}
+
+//* Config init
+void init_config(){
+	atomic_lock lck(Global::init_conf);
+	vector<string> load_warnings;
+	Config::load(Config::conf_file, load_warnings);
+	Config::set("lowcolor", (Global::arg_low_color ? true : not Config::getB("truecolor")));
+
+	static bool first_init = true;
+
+	if (Global::debug and first_init) {
+		Logger::set("DEBUG");
+		Logger::debug("Running in DEBUG mode!");
+	}
+	else Logger::set(Config::getS("log_level"));
+
+	static string log_level;
+	if (const string current_level = Config::getS("log_level"); log_level != current_level) {
+		log_level = current_level;
+		Logger::info("Logger set to " + (Global::debug ? "DEBUG" : log_level));
+	}
+
+	for (const auto& err_str : load_warnings) Logger::warning(err_str);
+	first_init = false;
 }
 
 //* Manages secondary thread for collection and drawing of boxes
@@ -403,7 +474,7 @@ namespace Runner {
 		}
 	};
 
-	//* Wrapper for raising priviliges when using SUID bit
+	//* Wrapper for raising privileges when using SUID bit
 	class gain_priv {
 		int status = -1;
 	public:
@@ -836,7 +907,7 @@ int main(int argc, char **argv) {
 
 	Global::start_time = time_s();
 
-	//? Save real and effective userid's and drop priviliges until needed if running with SUID bit set
+	//? Save real and effective userid's and drop privileges until needed if running with SUID bit set
 	Global::real_uid = getuid();
 	Global::set_uid = geteuid();
 	if (Global::real_uid != Global::set_uid) {
@@ -895,22 +966,7 @@ int main(int argc, char **argv) {
 	}
 
 	//? Config init
-	{
-		atomic_lock lck(Global::init_conf);
-		vector<string> load_warnings;
-		Config::load(Config::conf_file, load_warnings);
-		Config::set("lowcolor", (Global::arg_low_color ? true : not Config::getB("truecolor")));
-
-		if (Global::debug) {
-			Logger::set("DEBUG");
-			Logger::debug("Starting in DEBUG mode!");
-		}
-		else Logger::set(Config::getS("log_level"));
-
-		Logger::info("Logger set to " + (Global::debug ? "DEBUG" : Config::getS("log_level")));
-
-		for (const auto& err_str : load_warnings) Logger::warning(err_str);
-	}
+	init_config();
 
 	//? Try to find and set a UTF-8 locale
 	if (std::setlocale(LC_ALL, "") != nullptr and not s_contains((string)std::setlocale(LC_ALL, ""), ";")
@@ -920,7 +976,7 @@ int main(int argc, char **argv) {
 	else {
 		string found;
 		bool set_failure{};
-		for (const auto loc_env : array{"LANG", "LC_ALL"}) {
+		for (const auto loc_env : array{"LANG", "LC_ALL", "LC_CTYPE"}) {
 			if (std::getenv(loc_env) != nullptr and str_to_upper(s_replace((string)std::getenv(loc_env), "-", "")).ends_with("UTF8")) {
 				found = std::getenv(loc_env);
 				if (std::setlocale(LC_ALL, found.c_str()) == nullptr) {
@@ -990,7 +1046,7 @@ int main(int argc, char **argv) {
 		Config::set("tty_mode", true);
 		Logger::info("Forcing tty mode: setting 16 color mode and using tty friendly graph symbols");
 	}
-#if not defined __APPLE__ && not defined __OpenBSD__
+#if not defined __APPLE__ && not defined __OpenBSD__ && not defined __NetBSD__
 	else if (not Global::arg_tty and Term::current_tty.starts_with("/dev/tty")) {
 		Config::set("tty_mode", true);
 		Logger::info("Real tty detected: setting 16 color mode and using tty friendly graph symbols");
@@ -1019,8 +1075,8 @@ int main(int argc, char **argv) {
 		clean_quit(1);
 	}
 
-	if (not Config::check_boxes(Config::getS("shown_boxes"))) {
-		Config::check_boxes("cpu mem net proc");
+	if (not Config::set_boxes(Config::getS("shown_boxes"))) {
+		Config::set_boxes("cpu mem net proc");
 		Config::set("shown_boxes", "cpu mem net proc"s);
 	}
 
@@ -1035,6 +1091,7 @@ int main(int argc, char **argv) {
 	std::signal(SIGCONT, _signal_handler);
 	std::signal(SIGWINCH, _signal_handler);
 	std::signal(SIGUSR1, _signal_handler);
+	std::signal(SIGUSR2, _signal_handler);
 
 	sigset_t mask;
 	sigemptyset(&mask);
@@ -1086,9 +1143,27 @@ int main(int argc, char **argv) {
 	try {
 		while (not true not_eq not false) {
 			//? Check for exceptions in secondary thread and exit with fail signal if true
-			if (Global::thread_exception) clean_quit(1);
-			else if (Global::should_quit) clean_quit(0);
-			else if (Global::should_sleep) { Global::should_sleep = false; _sleep(); }
+			if (Global::thread_exception) {
+				clean_quit(1);
+			}
+			else if (Global::should_quit) {
+				clean_quit(0);
+			}
+			else if (Global::should_sleep) {
+				Global::should_sleep = false;
+				_sleep();
+			}
+			//? Hot reload config from CTRL + R or SIGUSR2
+			else if (Global::reload_conf) {
+				Global::reload_conf = false;
+				if (Runner::active) Runner::stop();
+				Config::unlock();
+				init_config();
+				Theme::updateThemes();
+				Theme::setTheme();
+				Draw::banner_gen(0, 0, false, true);
+				Global::resized = true;
+			}
 
 			//? Make sure terminal size hasn't changed (in case of SIGWINCH not working properly)
 			term_resize(Global::resized);
@@ -1123,9 +1198,9 @@ int main(int argc, char **argv) {
 					update_ms = Config::getI("update_ms");
 					future_time = time_ms() + update_ms;
 				}
-				else if (future_time - current_time > update_ms)
+				else if (future_time - current_time > update_ms) {
 					future_time = current_time;
-
+				}
 				//? Poll for input and process any input detected
 				else if (Input::poll(min((uint64_t)1000, future_time - current_time))) {
 					if (not Runner::active) Config::unlock();

@@ -25,9 +25,18 @@ tab-size = 4
 #include <string>
 #include <tuple>
 #include <vector>
-#include <ifaddrs.h>
 #include <unordered_map>
 #include <unistd.h>
+
+// From `man 3 getifaddrs`: <net/if.h> must be included before <ifaddrs.h>
+// clang-format off
+#include <net/if.h>
+#include <ifaddrs.h>
+// clang-format on
+
+#if defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+# include <kvm.h>
+#endif
 
 using std::array;
 using std::atomic;
@@ -83,6 +92,15 @@ namespace Shared {
 	void init();
 
 	extern long coreCount, page_size, clk_tck;
+
+#if defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+	struct KvmDeleter {
+		void operator()(kvm_t* handle) {
+			kvm_close(handle);
+		}
+	};
+	using KvmPtr = std::unique_ptr<kvm_t, KvmDeleter>;
+#endif
 }
 
 
@@ -93,14 +111,15 @@ namespace Gpu {
 	extern vector<int> x_vec, y_vec;
 	extern vector<bool> redraw;
 	extern int shown;
-	extern vector<char> shown_panels;
+	extern int count;
+	extern vector<int> shown_panels;
 	extern vector<string> gpu_names;
 	extern vector<int> gpu_b_height_offsets;
 	extern long long gpu_pwr_total_max;
 
 	extern std::unordered_map<string, deque<long long>> shared_gpu_percent; // averages, power/vram total
 
-  const array mem_names { "used"s, "free"s };
+	const array mem_names { "used"s, "free"s };
 
 	//* Container for process information // TODO
 	/*struct proc_info {
@@ -178,7 +197,7 @@ namespace Cpu {
 	extern string cpuName, cpuHz;
 	extern vector<string> available_fields;
 	extern vector<string> available_sensors;
-	extern tuple<int, long, string> current_bat;
+	extern tuple<int, float, long, string> current_bat;
 
 	struct cpu_info {
 		std::unordered_map<string, deque<long long>> cpu_percent = {
@@ -213,7 +232,7 @@ namespace Cpu {
 	auto get_cpuHz() -> string;
 
 	//* Get battery info from /sys
-	auto get_battery() -> tuple<int, long, string>;
+	auto get_battery() -> tuple<int, float, long, string>;
 }
 
 namespace Mem {
@@ -287,6 +306,17 @@ namespace Net {
 		string ipv4{};      // defaults to ""
 		string ipv6{};      // defaults to ""
 		bool connected{};
+	};
+
+	class IfAddrsPtr {
+		struct ifaddrs* ifaddr;
+		int status;
+	public:
+		IfAddrsPtr() { status = getifaddrs(&ifaddr); }
+		~IfAddrsPtr() { freeifaddrs(ifaddr); }
+		[[nodiscard]] constexpr auto operator()() -> struct ifaddrs* { return ifaddr; }
+		[[nodiscard]] constexpr auto get() -> struct ifaddrs* { return ifaddr; }
+		[[nodiscard]] constexpr auto get_status() const noexcept -> int { return status; };
 	};
 
 	extern std::unordered_map<string, net_info> current_net;
@@ -394,6 +424,8 @@ namespace Proc {
 	//* Recursive sort of process tree
 	void tree_sort(vector<tree_proc>& proc_vec, const string& sorting,
 				   bool reverse, int& c_index, const int index_max, bool collapsed = false);
+
+	bool matches_filter(const proc_info& proc, const std::string& filter);
 
 	//* Generate process tree list
 	void _tree_gen(proc_info& cur_proc, vector<proc_info>& in_procs, vector<tree_proc>& out_procs,

@@ -89,7 +89,7 @@ namespace Term {
 	}
 
 	bool refresh(bool only_check) {
-		// Query dimensions of '/dev/tty' of the 'STDOUT_FILENO' isn't avaiable.
+		// Query dimensions of '/dev/tty' of the 'STDOUT_FILENO' isn't available.
 		// This variable is set in those cases to avoid calls to ioctl
 		constinit static bool uses_dev_tty = false;
 		struct winsize wsize {};
@@ -123,9 +123,9 @@ namespace Term {
         bool proc = boxes.find("proc") != string::npos;
 	#ifdef GPU_SUPPORT
 		int gpu = 0;
-        if (not Gpu::gpu_names.empty())
-        	for (char i = '0'; i <= '5'; ++i)
-        		gpu += (boxes.find(std::string("gpu") + i) != string::npos);
+        if (Gpu::count > 0)
+        	for (char i = '0'; i <= '5'; i++)
+        		gpu += (Tools::s_contains(boxes, "gpu"s + i) ? 1 : 0);
 	#endif
         int width = 0;
 		if (mem) width = Mem::min_width;
@@ -644,7 +644,7 @@ namespace Logger {
 	size_t loglevel;
 	fs::path logfile;
 
-	//* Wrapper for lowering priviliges if using SUID bit and currently isn't using real userid
+	//* Wrapper for lowering privileges if using SUID bit and currently isn't using real userid
 	class lose_priv {
 		int status = -1;
 	public:

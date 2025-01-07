@@ -18,6 +18,10 @@ tab-size = 4
 
 #pragma once
 
+#if !defined(NDEBUG)
+# define BTOP_DEBUG
+#endif
+
 #include <algorithm>        // for std::ranges::count_if
 #include <array>
 #include <atomic>
@@ -42,11 +46,9 @@ tab-size = 4
 		#define HOST_NAME_MAX 64
 	#endif
 #endif
-#define FMT_HEADER_ONLY
+
 #include "fmt/core.h"
 #include "fmt/format.h"
-#include "fmt/ostream.h"
-#include "fmt/ranges.h"
 
 using std::array;
 using std::atomic;
@@ -112,7 +114,7 @@ namespace Mv {
 	//* Save cursor position
 	const string save = Fx::e + "s";
 
-	//* Restore saved cursor postion
+	//* Restore saved cursor position
 	const string restore = Fx::e + "u";
 }
 
@@ -284,7 +286,7 @@ namespace Tools {
 		return is_in(str, "true", "True");
 	}
 
-	//* Check if a string is a valid integer value (only postive)
+	//* Check if a string is a valid integer value (only positive)
 	inline bool isint(const string& str) {
 		return all_of(str.begin(), str.end(), ::isdigit);
 	}

@@ -191,7 +191,7 @@ namespace Cpu {
 	string cpuHz;
 	bool has_battery = true;
 	bool macM1 = false;
-	tuple<int, long, string> current_bat;
+	tuple<int, float, long, string> current_bat;
 
 	const array<string, 10> time_names = {"user", "nice", "system", "idle"};
 
@@ -407,8 +407,8 @@ namespace Cpu {
 		~IOPSList_Wrap() { CFRelease(data); }
 	};
 
-	auto get_battery() -> tuple<int, long, string> {
-		if (not has_battery) return {0, 0, ""};
+	auto get_battery() -> tuple<int, float, long, string> {
+		if (not has_battery) return {0, 0, 0, ""};
 
 		uint32_t percent = -1;
 		long seconds = -1;
@@ -447,7 +447,7 @@ namespace Cpu {
 				has_battery = false;
 			}
 		}
-		return {percent, seconds, status};
+		return {percent, -1, seconds, status};
 	}
 
 	auto collect(bool no_update) -> cpu_info & {
@@ -686,7 +686,7 @@ namespace Mem {
 		if (host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t)&p, &info_size) == 0) {
 			mem.stats.at("free") = p.free_count * Shared::pageSize;
 			mem.stats.at("cached") = p.external_page_count * Shared::pageSize;
-			mem.stats.at("used") = (p.active_count + p.inactive_count + p.wire_count) * Shared::pageSize;
+			mem.stats.at("used") = (p.active_count + p.wire_count) * Shared::pageSize;
 			mem.stats.at("available") = Shared::totalMem - mem.stats.at("used");
 		}
 
@@ -795,8 +795,13 @@ namespace Mem {
 				disk.total = vfs.f_blocks * vfs.f_frsize;
 				disk.free = vfs.f_bfree * vfs.f_frsize;
 				disk.used = disk.total - disk.free;
-				disk.used_percent = round((double)disk.used * 100 / disk.total);
-				disk.free_percent = 100 - disk.used_percent;
+				if (disk.total != 0) {
+					disk.used_percent = round((double)disk.used * 100 / disk.total);
+					disk.free_percent = 100 - disk.used_percent;
+				} else {
+					disk.used_percent = 0;
+					disk.free_percent = 0;
+				}
 			}
 
 			//? Setup disks order in UI and add swap if enabled
@@ -940,7 +945,7 @@ namespace Net {
 				}
 			}
 
-			//? Get total recieved and transmitted bytes + device address if no ip was found
+			//? Get total received and transmitted bytes + device address if no ip was found
 			for (const auto &iface : interfaces) {
 				for (const string dir : {"download", "upload"}) {
 					auto &saved_stat = net.at(iface).stat.at(dir);
@@ -1212,10 +1217,14 @@ namespace Proc {
 					//? Get program name, command, username, parent pid, nice and status
 					if (no_cache) {
 						char fullname[PROC_PIDPATHINFO_MAXSIZE];
-						proc_pidpath(pid, fullname, sizeof(fullname));
-						const string f_name = std::string(fullname);
-						size_t lastSlash = f_name.find_last_of('/');
-						new_proc.name = f_name.substr(lastSlash + 1);
+						int rc = proc_pidpath(pid, fullname, sizeof(fullname));
+						string f_name = "<defunct>";
+						if (rc != 0) {
+							f_name = std::string(fullname);
+							size_t lastSlash = f_name.find_last_of('/');
+							f_name = f_name.substr(lastSlash + 1);
+						}
+						new_proc.name = f_name;
 						//? Get process arguments if possible, fallback to process path in case of failure
 						if (Shared::arg_max > 0) {
 							std::unique_ptr<char[]> proc_chars(new char[Shared::arg_max]);
@@ -1245,7 +1254,11 @@ namespace Proc {
 						new_proc.ppid = kproc.kp_eproc.e_ppid;
 						new_proc.cpu_s = kproc.kp_proc.p_starttime.tv_sec * 1'000'000 + kproc.kp_proc.p_starttime.tv_usec;
 						struct passwd *pwd = getpwuid(kproc.kp_eproc.e_ucred.cr_uid);
-						new_proc.user = pwd->pw_name;
+                        if (pwd != nullptr) {
+                            new_proc.user = pwd->pw_name;
+                        } else {
+                            new_proc.user = std::to_string(kproc.kp_eproc.e_ucred.cr_uid);
+                        }
 					}
 					new_proc.p_nice = kproc.kp_proc.p_nice;
 					new_proc.state = kproc.kp_proc.p_stat;
@@ -1297,7 +1310,7 @@ namespace Proc {
 			filter_found = 0;
 			for (auto &p : current_procs) {
 				if (not tree and not filter.empty()) {
-					if (not s_contains_ic(to_string(p.pid), filter) and not s_contains_ic(p.name, filter) and not s_contains_ic(p.cmd, filter) and not s_contains_ic(p.user, filter)) {
+					if (!matches_filter(p, filter)) {
 						p.filtered = true;
 						filter_found++;
 					} else {

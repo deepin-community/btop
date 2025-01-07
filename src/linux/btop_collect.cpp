@@ -47,6 +47,14 @@ tab-size = 4
 #include "../btop_config.hpp"
 #include "../btop_tools.hpp"
 
+#if defined(GPU_SUPPORT)
+	#define class class_
+extern "C" {
+	#include "./intel_gpu_top/intel_gpu_top.h"
+}
+	#undef class
+#endif
+
 using std::clamp;
 using std::cmp_greater;
 using std::cmp_less;
@@ -158,42 +166,65 @@ namespace Gpu {
 
 	//? AMD data collection
 	namespace Rsmi {
+
+	//? RSMI defines, structs & typedefs
+	#define RSMI_DEVICE_NAME_BUFFER_SIZE 128
+
 	#if !defined(RSMI_STATIC)
-		//? RSMI defines, structs & typedefs
-		#define RSMI_MAX_NUM_FREQUENCIES  32
-		#define RSMI_STATUS_SUCCESS        0
-		#define RSMI_MEM_TYPE_VRAM         0
-		#define RSMI_TEMP_CURRENT          0
-		#define RSMI_TEMP_TYPE_EDGE        0
-		#define RSMI_CLK_TYPE_MEM          4
-		#define RSMI_CLK_TYPE_SYS          0
-		#define RSMI_TEMP_MAX              1
+		#define RSMI_MAX_NUM_FREQUENCIES_V5  32
+		#define RSMI_MAX_NUM_FREQUENCIES_V6  33
+		#define RSMI_STATUS_SUCCESS           0
+		#define RSMI_MEM_TYPE_VRAM            0
+		#define RSMI_TEMP_CURRENT             0
+		#define RSMI_TEMP_TYPE_EDGE           0
+		#define RSMI_CLK_TYPE_MEM             4
+		#define RSMI_CLK_TYPE_SYS             0
+		#define RSMI_TEMP_MAX                 1
 
 		typedef int rsmi_status_t,
 					rsmi_temperature_metric_t,
 					rsmi_clk_type_t,
 					rsmi_memory_type_t;
 
-		struct rsmi_frequencies_t {uint32_t num_supported, current, frequency[RSMI_MAX_NUM_FREQUENCIES];};
+		struct rsmi_version_t {uint32_t major,  minor,  patch; const char* build;};
+		struct rsmi_frequencies_t_v5 {uint32_t num_supported, current; uint64_t frequency[RSMI_MAX_NUM_FREQUENCIES_V5];};
+		struct rsmi_frequencies_t_v6 {bool has_deep_sleep; uint32_t num_supported, current; uint64_t frequency[RSMI_MAX_NUM_FREQUENCIES_V6];};
 
 		//? Function pointers
 		rsmi_status_t (*rsmi_init)(uint64_t);
 		rsmi_status_t (*rsmi_shut_down)();
+		rsmi_status_t (*rsmi_version_get)(rsmi_version_t*);
 		rsmi_status_t (*rsmi_num_monitor_devices)(uint32_t*);
 		rsmi_status_t (*rsmi_dev_name_get)(uint32_t, char*, size_t);
 		rsmi_status_t (*rsmi_dev_power_cap_get)(uint32_t, uint32_t, uint64_t*);
 		rsmi_status_t (*rsmi_dev_temp_metric_get)(uint32_t, uint32_t, rsmi_temperature_metric_t, int64_t*);
 		rsmi_status_t (*rsmi_dev_busy_percent_get)(uint32_t, uint32_t*);
 		rsmi_status_t (*rsmi_dev_memory_busy_percent_get)(uint32_t, uint32_t*);
-		rsmi_status_t (*rsmi_dev_gpu_clk_freq_get)(uint32_t, rsmi_clk_type_t, rsmi_frequencies_t*);
+		rsmi_status_t (*rsmi_dev_gpu_clk_freq_get_v5)(uint32_t, rsmi_clk_type_t, rsmi_frequencies_t_v5*);
+		rsmi_status_t (*rsmi_dev_gpu_clk_freq_get_v6)(uint32_t, rsmi_clk_type_t, rsmi_frequencies_t_v6*);
 		rsmi_status_t (*rsmi_dev_power_ave_get)(uint32_t, uint32_t, uint64_t*);
 		rsmi_status_t (*rsmi_dev_memory_total_get)(uint32_t, rsmi_memory_type_t, uint64_t*);
 		rsmi_status_t (*rsmi_dev_memory_usage_get)(uint32_t, rsmi_memory_type_t, uint64_t*);
 		rsmi_status_t (*rsmi_dev_pci_throughput_get)(uint32_t, uint64_t*, uint64_t*, uint64_t*);
 
+		uint32_t version_major = 0;
+
 		//? Data
 		void* rsmi_dl_handle;
 	#endif
+		bool initialized = false;
+		bool init();
+		bool shutdown();
+		template <bool is_init> bool collect(gpu_info* gpus_slice);
+		uint32_t device_count = 0;
+	}
+
+
+	//? Intel data collection
+	namespace Intel {
+		const char* device = "i915";
+		struct engines *engines = nullptr;
+
 		bool initialized = false;
 		bool init();
 		bool shutdown();
@@ -266,6 +297,7 @@ namespace Shared {
 	#ifdef GPU_SUPPORT
 		Gpu::Nvml::init();
 		Gpu::Rsmi::init();
+		Gpu::Intel::init();
 		if (not Gpu::gpu_names.empty()) {
 			for (auto const& [key, _] : Gpu::gpus[0].gpu_percent)
 				Cpu::available_fields.push_back(key);
@@ -273,6 +305,7 @@ namespace Shared {
 				Cpu::available_fields.push_back(key);
 
 			using namespace Gpu;
+			count = gpus.size();
 			gpu_b_height_offsets.resize(gpus.size());
 			for (size_t i = 0; i < gpu_b_height_offsets.size(); ++i)
 				gpu_b_height_offsets[i] = gpus[i].supported_functions.gpu_utilization
@@ -294,7 +327,7 @@ namespace Cpu {
 	string cpuName;
 	string cpuHz;
 	bool has_battery = true;
-	tuple<int, long, string> current_bat;
+	tuple<int, float, long, string> current_bat;
 
 	const array time_names {
 		"user"s, "nice"s, "system"s, "idle"s, "iowait"s,
@@ -438,7 +471,7 @@ namespace Cpu {
 						const int file_id = atoi(file.path().filename().c_str() + 4); // skip "temp" prefix
 						string file_path = file.path();
 
-						if (!s_contains(file_path, file_suffix)) {
+						if (!s_contains(file_path, file_suffix) or s_contains(file_path, "nvme")) {
 							continue;
 						}
 
@@ -583,7 +616,7 @@ namespace Cpu {
 				cpuhz += " GHz";
 			}
 			else if (hz > 0)
-				cpuhz = to_string((int)round(hz)) + " MHz";
+				cpuhz = to_string((int)hz) + " MHz";
 
 		}
 		catch (const std::exception& e) {
@@ -664,13 +697,14 @@ namespace Cpu {
 	}
 
 	struct battery {
-		fs::path base_dir, energy_now, energy_full, power_now, status, online;
+		fs::path base_dir, energy_now, charge_now, energy_full, charge_full, power_now, current_now, voltage_now, status, online;
 		string device_type;
-		bool use_energy = true;
+		bool use_energy_or_charge = true;
+		bool use_power = true;
 	};
 
-	auto get_battery() -> tuple<int, long, string> {
-		if (not has_battery) return {0, 0, ""};
+	auto get_battery() -> tuple<int, float, long, string> {
+		if (not has_battery) return {0, 0, 0, ""};
 		static string auto_sel;
 		static std::unordered_map<string, battery> batteries;
 
@@ -702,19 +736,27 @@ namespace Cpu {
 						}
 
 						if (fs::exists(bat_dir / "energy_now")) new_bat.energy_now = bat_dir / "energy_now";
-						else if (fs::exists(bat_dir / "charge_now")) new_bat.energy_now = bat_dir / "charge_now";
-						else new_bat.use_energy = false;
+						else if (fs::exists(bat_dir / "charge_now")) new_bat.charge_now = bat_dir / "charge_now";
+						else new_bat.use_energy_or_charge = false;
 
 						if (fs::exists(bat_dir / "energy_full")) new_bat.energy_full = bat_dir / "energy_full";
-						else if (fs::exists(bat_dir / "charge_full")) new_bat.energy_full = bat_dir / "charge_full";
-						else new_bat.use_energy = false;
+						else if (fs::exists(bat_dir / "charge_full")) new_bat.charge_full = bat_dir / "charge_full";
+						else new_bat.use_energy_or_charge = false;
 
-						if (not new_bat.use_energy and not fs::exists(bat_dir / "capacity")) {
+						if (not new_bat.use_energy_or_charge and not fs::exists(bat_dir / "capacity")) {
 							continue;
 						}
 
-						if (fs::exists(bat_dir / "power_now")) new_bat.power_now = bat_dir / "power_now";
-						else if (fs::exists(bat_dir / "current_now")) new_bat.power_now = bat_dir / "current_now";
+						if (fs::exists(bat_dir / "power_now")) {
+							new_bat.power_now = bat_dir / "power_now";
+						}
+						else if ((fs::exists(bat_dir / "current_now")) and (fs::exists(bat_dir / "voltage_now"))) {
+							 new_bat.current_now = bat_dir / "current_now";
+							 new_bat.voltage_now = bat_dir / "voltage_now";
+						}
+						else {
+							new_bat.use_power = false;
+						}
 
 						if (fs::exists(bat_dir / "AC0/online")) new_bat.online = bat_dir / "AC0/online";
 						else if (fs::exists(bat_dir / "AC/online")) new_bat.online = bat_dir / "AC/online";
@@ -729,7 +771,7 @@ namespace Cpu {
 			}
 			if (batteries.empty()) {
 				has_battery = false;
-				return {0, 0, ""};
+				return {0, 0, 0, ""};
 			}
 		}
 
@@ -749,15 +791,9 @@ namespace Cpu {
 
 		int percent = -1;
 		long seconds = -1;
+		float watts = -1;
 
 		//? Try to get battery percentage
-		if (b.use_energy) {
-			try {
-				percent = round(100.0 * stoll(readfile(b.energy_now, "-1")) / stoll(readfile(b.energy_full, "1")));
-			}
-			catch (const std::invalid_argument&) { }
-			catch (const std::out_of_range&) { }
-		}
 		if (percent < 0) {
 			try {
 				percent = stoll(readfile(b.base_dir / "capacity", "-1"));
@@ -765,9 +801,23 @@ namespace Cpu {
 			catch (const std::invalid_argument&) { }
 			catch (const std::out_of_range&) { }
 		}
+		if (b.use_energy_or_charge and percent < 0) {
+			try {
+				percent = round(100.0 * stoll(readfile(b.energy_now, "-1")) / stoll(readfile(b.energy_full, "1")));
+			}
+			catch (const std::invalid_argument&) { }
+			catch (const std::out_of_range&) { }
+		}
+		if (b.use_energy_or_charge and percent < 0) {
+			try {
+				percent = round(100.0 * stoll(readfile(b.charge_now, "-1")) / stoll(readfile(b.charge_full, "1")));
+			}
+			catch (const std::invalid_argument&) { }
+			catch (const std::out_of_range&) { }
+		}
 		if (percent < 0) {
 			has_battery = false;
-			return {0, 0, ""};
+			return {0, 0, 0, ""};
 		}
 
 		//? Get charging/discharging status
@@ -781,13 +831,23 @@ namespace Cpu {
 
 		//? Get seconds to empty
 		if (not is_in(status, "charging", "full")) {
-			if (b.use_energy and not b.power_now.empty()) {
-				try {
-					seconds = round((double)stoll(readfile(b.energy_now, "0")) / stoll(readfile(b.power_now, "1")) * 3600);
+			if (b.use_energy_or_charge ) {
+				if (not b.power_now.empty()) {
+					try {
+						seconds = round((double)stoll(readfile(b.energy_now, "0")) / stoll(readfile(b.power_now, "1")) * 3600);
+					}
+					catch (const std::invalid_argument&) { }
+					catch (const std::out_of_range&) { }
 				}
-				catch (const std::invalid_argument&) { }
-				catch (const std::out_of_range&) { }
+				else if (not b.current_now.empty()) {
+					try {
+						seconds = round((double)stoll(readfile(b.charge_now, "0")) / (double)stoll(readfile(b.current_now, "1")) * 3600);
+					}
+					catch (const std::invalid_argument&) { }
+					catch (const std::out_of_range&) { }
+				}
 			}
+
 			if (seconds < 0 and fs::exists(b.base_dir / "time_to_empty")) {
 				try {
 					seconds = stoll(readfile(b.base_dir / "time_to_empty", "0")) * 60;
@@ -797,7 +857,26 @@ namespace Cpu {
 			}
 		}
 
-		return {percent, seconds, status};
+		//? Get power draw
+		if (b.use_power) {
+			if (not b.power_now.empty()) {
+				try {
+					watts = (float)stoll(readfile(b.power_now, "-1")) / 1000000.0;
+				}
+				catch (const std::invalid_argument&) { }
+				catch (const std::out_of_range&) { }
+			}
+			else if (not b.voltage_now.empty() and not b.current_now.empty()) {
+				try {
+					watts = (float)stoll(readfile(b.current_now, "-1")) / 1000000.0 * stoll(readfile(b.voltage_now, "1")) / 1000000.0;
+				}
+				catch (const std::invalid_argument&) { }
+				catch (const std::out_of_range&) { }
+			}
+
+		}
+
+		return {percent, watts, seconds, status};
 	}
 
 	auto collect(bool no_update) -> cpu_info& {
@@ -1147,6 +1226,8 @@ namespace Gpu {
 						if constexpr(is_init) gpus_slice[i].supported_functions.pwr_usage = false;
     				} else {
     					gpus_slice[i].pwr_usage = (long long)power;
+						if (gpus_slice[i].pwr_usage > gpus_slice[i].pwr_max_usage)
+								gpus_slice[i].pwr_max_usage = gpus_slice[i].pwr_usage;
     					gpus_slice[i].gpu_percent.at("gpu-pwr-totals").push_back(clamp((long long)round((double)gpus_slice[i].pwr_usage * 100.0 / (double)gpus_slice[i].pwr_max_usage), 0ll, 100ll));
     				}
     			}
@@ -1232,6 +1313,7 @@ namespace Gpu {
 				"librocm_smi64.so",
 				"librocm_smi64.so.5", // fedora
 				"librocm_smi64.so.1.0", // debian
+				"librocm_smi64.so.6"
 			};
 
 			for (const auto& l : libRocAlts) {
@@ -1259,13 +1341,13 @@ namespace Gpu {
 
 		    LOAD_SYM(rsmi_init);
 		    LOAD_SYM(rsmi_shut_down);
+			LOAD_SYM(rsmi_version_get);
 		    LOAD_SYM(rsmi_num_monitor_devices);
 		    LOAD_SYM(rsmi_dev_name_get);
 		    LOAD_SYM(rsmi_dev_power_cap_get);
 		    LOAD_SYM(rsmi_dev_temp_metric_get);
 		    LOAD_SYM(rsmi_dev_busy_percent_get);
 		    LOAD_SYM(rsmi_dev_memory_busy_percent_get);
-		    LOAD_SYM(rsmi_dev_gpu_clk_freq_get);
 		    LOAD_SYM(rsmi_dev_power_ave_get);
 		    LOAD_SYM(rsmi_dev_memory_total_get);
 		    LOAD_SYM(rsmi_dev_memory_usage_get);
@@ -1280,6 +1362,27 @@ namespace Gpu {
 				Logger::debug("Failed to initialize ROCm SMI, AMD GPUs will not be detected");
 				return false;
 			}
+
+		#if !defined(RSMI_STATIC)
+			//? Check version
+			rsmi_version_t version;
+			result = rsmi_version_get(&version);
+			if (result != RSMI_STATUS_SUCCESS) {
+				Logger::warning("ROCm SMI: Failed to get version");
+				return false;
+			} else if (version.major == 5) {
+				if ((rsmi_dev_gpu_clk_freq_get_v5 = (decltype(rsmi_dev_gpu_clk_freq_get_v5))load_rsmi_sym("rsmi_dev_gpu_clk_freq_get")) == nullptr)
+					return false;
+			// In the release tarballs of rocm 6.0.0 and 6.0.2 the version queried with rsmi_version_get is 7.0.0.0
+			} else if (version.major == 6 || version.major == 7) {
+				if ((rsmi_dev_gpu_clk_freq_get_v6 = (decltype(rsmi_dev_gpu_clk_freq_get_v6))load_rsmi_sym("rsmi_dev_gpu_clk_freq_get")) == nullptr)
+					return false;
+			} else {
+				Logger::warning("ROCm SMI: Dynamic loading only supported for version 5 and 6");
+				return false;
+			}
+			version_major = version.major;
+		#endif
 
 			//? Device count
 			result = rsmi_num_monitor_devices(&device_count);
@@ -1321,8 +1424,8 @@ namespace Gpu {
 			for (uint32_t i = 0; i < device_count; ++i) {
 				if constexpr(is_init) {
 					//? Device name
-					char name[NVML_DEVICE_NAME_BUFFER_SIZE]; // ROCm SMI does not provide a constant for this as far as I can tell, this should be good enough
-    				result = rsmi_dev_name_get(i, name, NVML_DEVICE_NAME_BUFFER_SIZE);
+					char name[RSMI_DEVICE_NAME_BUFFER_SIZE];
+    				result = rsmi_dev_name_get(i, name, RSMI_DEVICE_NAME_BUFFER_SIZE);
         			if (result != RSMI_STATUS_SUCCESS)
     					Logger::warning("ROCm SMI: Failed to get device name");
         			else gpu_names[Nvml::device_count + i] = string(name);
@@ -1364,7 +1467,46 @@ namespace Gpu {
 						if constexpr(is_init) gpus_slice[i].supported_functions.mem_utilization = false;
     				} else gpus_slice[i].mem_utilization_percent.push_back((long long)utilization);
 				}
+			#if !defined(RSMI_STATIC)
+				//? Clock speeds
+				if (gpus_slice[i].supported_functions.gpu_clock) {
+					if (version_major == 5) {
+						rsmi_frequencies_t_v5 frequencies;
+						result = rsmi_dev_gpu_clk_freq_get_v5(i, RSMI_CLK_TYPE_SYS, &frequencies);
+						if (result != RSMI_STATUS_SUCCESS) {
+							Logger::warning("ROCm SMI: Failed to get GPU clock speed: ");
+							if constexpr(is_init) gpus_slice[i].supported_functions.gpu_clock = false;
+						} else gpus_slice[i].gpu_clock_speed = (long long)frequencies.frequency[frequencies.current]/1000000; // Hz to MHz
+					}
+					else if (version_major == 6 || version_major == 7) {
+						rsmi_frequencies_t_v6 frequencies;
+						result = rsmi_dev_gpu_clk_freq_get_v6(i, RSMI_CLK_TYPE_SYS, &frequencies);
+						if (result != RSMI_STATUS_SUCCESS) {
+							Logger::warning("ROCm SMI: Failed to get GPU clock speed: ");
+							if constexpr(is_init) gpus_slice[i].supported_functions.gpu_clock = false;
+						} else gpus_slice[i].gpu_clock_speed = (long long)frequencies.frequency[frequencies.current]/1000000; // Hz to MHz
+					}
+				}
 
+				if (gpus_slice[i].supported_functions.mem_clock) {
+					if (version_major == 5) {
+						rsmi_frequencies_t_v5 frequencies;
+						result = rsmi_dev_gpu_clk_freq_get_v5(i, RSMI_CLK_TYPE_MEM, &frequencies);
+						if (result != RSMI_STATUS_SUCCESS) {
+							Logger::warning("ROCm SMI: Failed to get VRAM clock speed: ");
+							if constexpr(is_init) gpus_slice[i].supported_functions.mem_clock = false;
+						} else gpus_slice[i].mem_clock_speed = (long long)frequencies.frequency[frequencies.current]/1000000; // Hz to MHz
+					}
+					else if (version_major == 6 || version_major == 7) {
+						rsmi_frequencies_t_v6 frequencies;
+						result = rsmi_dev_gpu_clk_freq_get_v6(i, RSMI_CLK_TYPE_MEM, &frequencies);
+						if (result != RSMI_STATUS_SUCCESS) {
+							Logger::warning("ROCm SMI: Failed to get VRAM clock speed: ");
+							if constexpr(is_init) gpus_slice[i].supported_functions.mem_clock = false;
+						} else gpus_slice[i].mem_clock_speed = (long long)frequencies.frequency[frequencies.current]/1000000; // Hz to MHz
+					}
+				}
+			#else
 				//? Clock speeds
 				if (gpus_slice[i].supported_functions.gpu_clock) {
 					rsmi_frequencies_t frequencies;
@@ -1383,6 +1525,7 @@ namespace Gpu {
 						if constexpr(is_init) gpus_slice[i].supported_functions.mem_clock = false;
     				} else gpus_slice[i].mem_clock_speed = (long long)frequencies.frequency[frequencies.current]/1000000; // Hz to MHz
 				}
+			#endif
 
     			//? Power usage & state
 				if (gpus_slice[i].supported_functions.pwr_usage) {
@@ -1391,7 +1534,12 @@ namespace Gpu {
     				if (result != RSMI_STATUS_SUCCESS) {
 						Logger::warning("ROCm SMI: Failed to get GPU power usage");
 						if constexpr(is_init) gpus_slice[i].supported_functions.pwr_usage = false;
-    				} else gpus_slice[i].gpu_percent.at("gpu-pwr-totals").push_back(clamp((long long)round((double)gpus_slice[i].pwr_usage * 100.0 / (double)gpus_slice[i].pwr_max_usage), 0ll, 100ll));
+    				} else {
+							gpus_slice[i].pwr_usage = (long long)power / 1000;
+							if (gpus_slice[i].pwr_usage > gpus_slice[i].pwr_max_usage)
+								gpus_slice[i].pwr_max_usage = gpus_slice[i].pwr_usage;
+							gpus_slice[i].gpu_percent.at("gpu-pwr-totals").push_back(clamp((long long)round((double)gpus_slice[i].pwr_usage * 100.0 / (double)gpus_slice[i].pwr_max_usage), 0ll, 100ll));
+						}
 
 					if constexpr(is_init) gpus_slice[i].supported_functions.pwr_state = false;
 				}
@@ -1432,7 +1580,7 @@ namespace Gpu {
 				}
 
 				//? PCIe link speeds
-				if (gpus_slice[i].supported_functions.pcie_txrx) {
+				if (gpus_slice[i].supported_functions.pcie_txrx and Config::getB("rsmi_measure_pcie_speeds")) {
 					uint64_t tx, rx;
 					result = rsmi_dev_pci_throughput_get(i, &tx, &rx, 0);
     				if (result != RSMI_STATUS_SUCCESS) {
@@ -1449,7 +1597,118 @@ namespace Gpu {
 		}
 	}
 
-	// TODO: Intel
+	namespace Intel {
+		bool init() {
+			if (initialized) return false;
+
+			char *gpu_path = find_intel_gpu_dir();
+			if (!gpu_path) {
+				Logger::debug("Failed to find Intel GPU sysfs path, Intel GPUs will not be detected");
+				return false;
+			}
+
+			char *gpu_device_id = get_intel_device_id(gpu_path);
+			if (!gpu_device_id) {
+				Logger::debug("Failed to find Intel GPU device ID, Intel GPUs will not be detected");
+				return false;
+			}
+
+			char *gpu_device_name = get_intel_device_name(gpu_device_id);
+			if (!gpu_device_name) {
+				Logger::warning("Failed to find Intel GPU device name in internal database");
+			}
+
+			free(gpu_device_id);
+
+			engines = discover_engines(device);
+			if (!engines) {
+				Logger::debug("Failed to find Intel GPU engines, Intel GPUs will not be detected");
+				return false;
+			}
+
+			int ret = pmu_init(engines);
+			if (ret) {
+				Logger::warning("Intel GPU: Failed to initialize PMU");
+				return false;
+			}
+
+			pmu_sample(engines);
+
+			device_count = 1;
+
+			gpus.resize(gpus.size() + device_count);
+			gpu_names.resize(gpus.size() + device_count);
+
+			if (gpu_device_name) {
+				gpu_names[Nvml::device_count + Rsmi::device_count] = string(gpu_device_name);
+			} else {
+				gpu_names[Nvml::device_count + Rsmi::device_count] = "Intel GPU";
+			}
+
+			free(gpu_device_name);
+
+			initialized = true;
+			Intel::collect<1>(gpus.data() + Nvml::device_count + Rsmi::device_count);
+
+			return true;
+		}
+
+		bool shutdown() {
+			if (!initialized) return false;
+			if (engines) {
+				free_engines(engines);
+				engines = nullptr;
+			}
+			initialized = false;
+			return true;
+		}
+
+		template <bool is_init> bool collect(gpu_info* gpus_slice) {
+			if (!initialized) return false;
+
+			if constexpr(is_init) {
+				gpus_slice->supported_functions = {
+					.gpu_utilization = true,
+					.mem_utilization = false,
+					.gpu_clock = true,
+					.mem_clock = false,
+					.pwr_usage = true,
+					.pwr_state = false,
+					.temp_info = false,
+					.mem_total = false,
+					.mem_used = false,
+					.pcie_txrx = false
+				};
+
+				gpus_slice->pwr_max_usage = 10'000; //? 10W
+			}
+
+			pmu_sample(engines);
+			double t = (double)(engines->ts.cur - engines->ts.prev) / 1e9;
+
+			double max_util = 0;
+			for (unsigned int i = 0; i < engines->num_engines; i++) {
+				struct engine *engine = &(&engines->engine)[i];
+				double util = pmu_calc(&engine->busy.val, 1e9, t, 100);
+				if (util > max_util) {
+					max_util = util;
+				}
+			}
+			gpus_slice->gpu_percent.at("gpu-totals").push_back((long long)round(max_util));
+
+			double pwr = pmu_calc(&engines->r_gpu.val, 1, t, engines->r_gpu.scale); // in Watts
+			gpus_slice->pwr_usage = (long long)round(pwr * 1000);
+			if (gpus_slice->pwr_usage > gpus_slice->pwr_max_usage)
+				gpus_slice->pwr_max_usage = gpus_slice->pwr_usage;
+
+			gpus_slice->gpu_percent.at("gpu-pwr-totals").push_back(clamp((long long)round((double)gpus_slice->pwr_usage * 100.0 / (double)gpus_slice->pwr_max_usage), 0ll, 100ll));
+
+			double freq = pmu_calc(&engines->freq_act.val, 1, t, 1); // in MHz
+			gpus_slice->gpu_clock_speed = (unsigned int)round(freq);
+
+			return true;
+		}
+	}
 
 	//? Collect data from GPU-specific libraries
 	auto collect(bool no_update) -> vector<gpu_info>& {
@@ -1460,6 +1719,7 @@ namespace Gpu {
 		//* Collect data
 		Nvml::collect<0>(gpus.data()); // raw pointer to vector data, size == Nvml::device_count
 		Rsmi::collect<0>(gpus.data() + Nvml::device_count); // size = Rsmi::device_count
+		Intel::collect<0>(gpus.data() + Nvml::device_count + Rsmi::device_count); // size = Intel::device_count
 
 		//* Calculate average usage
 		long long avg = 0;
@@ -1501,6 +1761,8 @@ namespace Gpu {
 			while (cmp_greater(shared_gpu_percent.at("gpu-pwr-total").size(), width * 2)) shared_gpu_percent.at("gpu-pwr-total").pop_front();
 			while (cmp_greater(shared_gpu_percent.at("gpu-vram-total").size(), width * 2)) shared_gpu_percent.at("gpu-vram-total").pop_front();
 		}
+
+		count = gpus.size();
 
 		return gpus;
 	}
@@ -1815,8 +2077,13 @@ namespace Mem {
 						disk.total = vfs.f_blocks * vfs.f_frsize;
 						disk.free = (free_priv ? vfs.f_bfree : vfs.f_bavail) * vfs.f_frsize;
 						disk.used = disk.total - disk.free;
-						disk.used_percent = round((double)disk.used * 100 / disk.total);
-						disk.free_percent = 100 - disk.used_percent;
+						if (disk.total != 0) {
+							disk.used_percent = round((double)disk.used * 100 / disk.total);
+							disk.free_percent = 100 - disk.used_percent;
+						} else {
+							disk.used_percent = 0;
+							disk.free_percent = 0;
+						}
 						return pair{disk, -1};
 					});
 					++it;
@@ -1946,7 +2213,7 @@ namespace Mem {
 			if (access(zfs_pool_stat_path.c_str(), R_OK) == 0) {
 				return zfs_pool_stat_path;
 			} else {
-				Logger::debug("Cant access folder: " + zfs_pool_stat_path.string());
+				Logger::debug("Can't access folder: " + zfs_pool_stat_path.string());
 				return "";
 			}
 		}
@@ -2084,16 +2351,6 @@ namespace Net {
 	bool rescale{true};
 	uint64_t timestamp{};
 
-	//* RAII wrapper for getifaddrs
-	class getifaddr_wrapper {
-		struct ifaddrs* ifaddr;
-	public:
-		int status;
-		getifaddr_wrapper() { status = getifaddrs(&ifaddr); }
-		~getifaddr_wrapper() { freeifaddrs(ifaddr); }
-		auto operator()() -> struct ifaddrs* { return ifaddr; }
-	};
-
 	auto collect(bool no_update) -> net_info& {
 		if (Runner::stopping) return empty_net;
 		auto& net = current_net;
@@ -2104,10 +2361,10 @@ namespace Net {
 
 		if (not no_update and errors < 3) {
 			//? Get interface list using getifaddrs() wrapper
-			getifaddr_wrapper if_wrap {};
-			if (if_wrap.status != 0) {
+			IfAddrsPtr if_addrs {};
+			if (if_addrs.get_status() != 0) {
 				errors++;
-				Logger::error("Net::collect() -> getifaddrs() failed with id " + to_string(if_wrap.status));
+				Logger::error("Net::collect() -> getifaddrs() failed with id " + to_string(if_addrs.get_status()));
 				redraw = true;
 				return empty_net;
 			}
@@ -2119,7 +2376,7 @@ namespace Net {
 			string ipv4, ipv6;
 
 			//? Iteration over all items in getifaddrs() list
-			for (auto* ifa = if_wrap(); ifa != nullptr; ifa = ifa->ifa_next) {
+			for (auto* ifa = if_addrs.get(); ifa != nullptr; ifa = ifa->ifa_next) {
 				if (ifa->ifa_addr == nullptr) continue;
 				family = ifa->ifa_addr->sa_family;
 				const auto& iface = ifa->ifa_name;
@@ -2161,7 +2418,7 @@ namespace Net {
 				} //else, ignoring family==AF_PACKET (see man 3 getifaddrs) which is the first one in the `for` loop.
 			}
 
-			//? Get total recieved and transmitted bytes + device address if no ip was found
+			//? Get total received and transmitted bytes + device address if no ip was found
 			for (const auto& iface : interfaces) {
 				if (net.at(iface).ipv4.empty() and net.at(iface).ipv6.empty())
 					net.at(iface).ipv4 = readfile("/sys/class/net/" + iface + "/address");
@@ -2688,18 +2945,13 @@ namespace Proc {
 			filter_found = 0;
 			for (auto& p : current_procs) {
 				if (not tree and not filter.empty()) {
-						if (not s_contains_ic(to_string(p.pid), filter)
-						and not s_contains_ic(p.name, filter)
-						and not s_contains_ic(p.cmd, filter)
-						and not s_contains_ic(p.user, filter)) {
-							p.filtered = true;
-							filter_found++;
-							}
-						else {
-							p.filtered = false;
-						}
+					if (!matches_filter(p, filter)) {
+						p.filtered = true;
+						filter_found++;
+					} else {
+						p.filtered = false;
 					}
-				else {
+				} else {
 					p.filtered = false;
 				}
 			}
