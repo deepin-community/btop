@@ -46,14 +46,9 @@ stage/
 *.out
 *.app
 
-# Compiled man page
-btop.1
-
 build
 bin
 btop
-/obj/
-config.h
 .*/
 
 # Optional libraries

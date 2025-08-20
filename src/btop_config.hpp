@@ -62,19 +62,17 @@ namespace Config {
 
 	[[nodiscard]] std::optional<std::filesystem::path> get_config_dir() noexcept;
 
-	//* Check if string only contains space separated valid names for boxes and set current_boxes
-	bool set_boxes(const string& boxes);
-
-	bool validBoxSizes(const string& boxes);
+	//* Check if string only contains space separated valid names for boxes
+	bool check_boxes(const string& boxes);
 
 	//* Toggle box and update config string shown_boxes
-	bool toggle_box(const string& box);
+	void toggle_box(const string& box);
 
 	//* Parse and setup config value presets
 	bool presetsValid(const string& presets);
 
 	//* Apply selected preset
-	bool apply_preset(const string& preset);
+	void apply_preset(const string& preset);
 
 	bool _locked(const std::string_view name);
 

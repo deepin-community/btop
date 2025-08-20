@@ -723,13 +723,8 @@ namespace Mem {
 				disk.total = vfs.f_blocks * vfs.f_frsize;
 				disk.free = vfs.f_bfree * vfs.f_frsize;
 				disk.used = disk.total - disk.free;
-				if (disk.total != 0) {
-					disk.used_percent = round((double)disk.used * 100 / disk.total);
-					disk.free_percent = 100 - disk.used_percent;
-				} else {
-					disk.used_percent = 0;
-					disk.free_percent = 0;
-				}
+				disk.used_percent = round((double)disk.used * 100 / disk.total);
+				disk.free_percent = 100 - disk.used_percent;
 			}
 
 			//? Setup disks order in UI and add swap if enabled
@@ -864,7 +859,7 @@ namespace Net {
 				}
 			}
 
-			//? Get total received and transmitted bytes + device address if no ip was found
+			//? Get total recieved and transmitted bytes + device address if no ip was found
 			for (const auto &iface : interfaces) {
 				for (const string dir : {"download", "upload"}) {
 					auto &saved_stat = net.at(iface).stat.at(dir);
@@ -1176,13 +1171,18 @@ namespace Proc {
 			filter_found = 0;
 			for (auto& p : current_procs) {
 				if (not tree and not filter.empty()) {
-					if (!matches_filter(p, filter)) {
-						p.filtered = true;
-						filter_found++;
-					} else {
-						p.filtered = false;
+						if (not s_contains_ic(to_string(p.pid), filter)
+						and not s_contains_ic(p.name, filter)
+						and not s_contains_ic(p.cmd, filter)
+						and not s_contains_ic(p.user, filter)) {
+							p.filtered = true;
+							filter_found++;
+							}
+						else {
+							p.filtered = false;
+						}
 					}
-				} else {
+				else {
 					p.filtered = false;
 				}
 			}

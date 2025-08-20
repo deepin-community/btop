@@ -6,7 +6,7 @@ export DEB_CFLAGS_MAINT_APPEND  = -Wall -pedantic
 export ADDFLAGS = -ffile-prefix-map=$(CURDIR)=.
 
 %:
-	dh $@
+	dh $@ -- 
 
 override_dh_auto_install:
 	dh_auto_install -- DESTDIR=$(CURDIR)/debian/btop PREFIX=/usr

@@ -34,7 +34,7 @@ tab-size = 4
 #include <ifaddrs.h>
 // clang-format on
 
-#if defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+#if defined(__FreeBSD__) || defined(__OpenBSD__)
 # include <kvm.h>
 #endif
 
@@ -93,7 +93,7 @@ namespace Shared {
 
 	extern long coreCount, page_size, clk_tck;
 
-#if defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+#if defined(__FreeBSD__) || defined(__OpenBSD__)
 	struct KvmDeleter {
 		void operator()(kvm_t* handle) {
 			kvm_close(handle);
@@ -111,15 +111,14 @@ namespace Gpu {
 	extern vector<int> x_vec, y_vec;
 	extern vector<bool> redraw;
 	extern int shown;
-	extern int count;
-	extern vector<int> shown_panels;
+	extern vector<char> shown_panels;
 	extern vector<string> gpu_names;
 	extern vector<int> gpu_b_height_offsets;
 	extern long long gpu_pwr_total_max;
 
 	extern std::unordered_map<string, deque<long long>> shared_gpu_percent; // averages, power/vram total
 
-	const array mem_names { "used"s, "free"s };
+  const array mem_names { "used"s, "free"s };
 
 	//* Container for process information // TODO
 	/*struct proc_info {
@@ -424,8 +423,6 @@ namespace Proc {
 	//* Recursive sort of process tree
 	void tree_sort(vector<tree_proc>& proc_vec, const string& sorting,
 				   bool reverse, int& c_index, const int index_max, bool collapsed = false);
-
-	bool matches_filter(const proc_info& proc, const std::string& filter);
 
 	//* Generate process tree list
 	void _tree_gen(proc_info& cur_proc, vector<proc_info>& in_procs, vector<tree_proc>& out_procs,

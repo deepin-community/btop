@@ -52,7 +52,6 @@ tab-size = 4
 #include "btop_theme.hpp"
 #include "btop_draw.hpp"
 #include "btop_menu.hpp"
-#include "config.h"
 #include "fmt/core.h"
 #include "fmt/ostream.h"
 
@@ -80,7 +79,7 @@ namespace Global {
 		{"#801414", "██████╔╝   ██║   ╚██████╔╝██║        ╚═╝    ╚═╝"},
 		{"#000000", "╚═════╝    ╚═╝    ╚═════╝ ╚═╝"},
 	};
-	const string Version = "1.4.0";
+	const string Version = "1.3.2";
 
 	int coreCount;
 	string overlay;
@@ -118,59 +117,29 @@ namespace Global {
 	int arg_update = 0;
 }
 
-static void print_version() {
-	if constexpr (GIT_COMMIT.empty()) {
-		fmt::println("btop version: {}", Global::Version);
-	} else {
-		fmt::println("btop version: {}+{}", Global::Version, GIT_COMMIT);
-	}
-}
-
-static void print_version_with_build_info() {
-	print_version();
-	fmt::println("Compiled with: {} ({})\nConfigured with: {}", COMPILER, COMPILER_VERSION, CONFIGURE_COMMAND);
-}
-
-static void print_usage() {
-	fmt::println("\033[1;4mUsage:\033[0;1m btop\033[0m [OPTIONS]\n");
-}
-
-static void print_help() {
-	print_usage();
-	fmt::println(
-			"{0}{1}Options:{2}\n"
-			"  {0}-h,  --help          {2}show this help message and exit\n"
-			"  {0}-v,  --version       {2}show version info and exit\n"
-			"  {0}-lc, --low-color     {2}disable truecolor, converts 24-bit colors to 256-color\n"
-			"  {0}-t,  --tty_on        {2}force (ON) tty mode, max 16 colors and tty friendly graph symbols\n"
-			"  {0}+t,  --tty_off       {2}force (OFF) tty mode\n"
-			"  {0}-p,  --preset <id>   {2}start with preset, integer value between 0-9\n"
-			"  {0}-u,  --update <ms>   {2}set the program update rate in milliseconds\n"
-			"  {0}     --utf-force     {2}force start even if no UTF-8 locale was detected\n"
-			"  {0}     --debug         {2}start in DEBUG mode: shows microsecond timer for information collect\n"
-			"  {0}                     {2}and screen draw functions and sets loglevel to DEBUG",
-			"\033[1m", "\033[4m", "\033[0m"
-	);
-}
-
-static void print_help_hint() {
-	fmt::println("For more information, try '{0}--help{1}'", "\033[1m", "\033[0m");
-}
-
 //* A simple argument parser
 void argumentParser(const int argc, char **argv) {
 	for(int i = 1; i < argc; i++) {
 		const string argument = argv[i];
 		if (is_in(argument, "-h", "--help")) {
-		  print_help();
+			fmt::println(
+					"usage: btop [-h] [-v] [-/+t] [-p <id>] [-u <ms>] [--utf-force] [--debug]\n\n"
+					"optional arguments:\n"
+					"  -h, --help            show this help message and exit\n"
+					"  -v, --version         show version info and exit\n"
+					"  -lc, --low-color      disable truecolor, converts 24-bit colors to 256-color\n"
+					"  -t, --tty_on          force (ON) tty mode, max 16 colors and tty friendly graph symbols\n"
+					"  +t, --tty_off         force (OFF) tty mode\n"
+					"  -p, --preset <id>     start with preset, integer value between 0-9\n"
+					"  -u, --update <ms>     set the program update rate in milliseconds\n"
+					"  --utf-force           force start even if no UTF-8 locale was detected\n"
+					"  --debug               start in DEBUG mode: shows microsecond timer for information collect\n"
+					"                        and screen draw functions and sets loglevel to DEBUG"
+			);
 			exit(0);
 		}
-		else if (is_in(argument, "-v")) {
-			print_version();
-			exit(0);
-		}
-		else if (is_in(argument, "--version")) {
-			print_version_with_build_info();
+		else if (is_in(argument, "-v", "--version")) {
+			fmt::println("btop version: {}", Global::Version);
 			exit(0);
 		}
 		else if (is_in(argument, "-lc", "--low-color")) {
@@ -186,35 +155,27 @@ void argumentParser(const int argc, char **argv) {
 		}
 		else if (is_in(argument, "-p", "--preset")) {
 			if (++i >= argc) {
-				fmt::println("{0}error:{1} Preset option needs an argument\n", "\033[1;31m", "\033[0m");
-				print_usage();
-				print_help_hint();
+				fmt::println("ERROR: Preset option needs an argument.");
 				exit(1);
 			}
 			else if (const string val = argv[i]; isint(val) and val.size() == 1) {
 				Global::arg_preset = std::clamp(stoi(val), 0, 9);
 			}
 			else {
-				fmt::println("{0}error: {1}Preset option only accepts an integer value between 0-9\n", "\033[1;31m", "\033[0m");
-				print_usage();
-				print_help_hint();
+				fmt::println("ERROR: Preset option only accepts an integer value between 0-9.");
 				exit(1);
 			}
 		}
 		else if (is_in(argument, "-u", "--update")) {
 			if (++i >= argc) {
-				fmt::println("{0}error:{1} Update option needs an argument\n", "\033[1;31m", "\033[0m");
-				print_usage();
-				print_help_hint();
+				fmt::println("ERROR: Update option needs an argument");
 				exit(1);
 			}
 			const std::string value = argv[i];
 			if (isint(value)) {
 				Global::arg_update = std::clamp(std::stoi(value), 100, Config::ONE_DAY_MILLIS);
 			} else {
-				fmt::println("{0}error:{1} Invalid update rate\n", "\033[1;31m", "\033[0m");
-				print_usage();
-				print_help_hint();
+				fmt::println("ERROR: Invalid update rate");
 				exit(1);
 			}
 		}
@@ -223,9 +184,8 @@ void argumentParser(const int argc, char **argv) {
 		else if (argument == "--debug")
 			Global::debug = true;
 		else {
-			fmt::println("{0}error:{2} unexpected argument '{1}{3}{2}' found\n", "\033[1;31m", "\033[33m", "\033[0m", argument);
-			print_usage();
-			print_help_hint();
+			fmt::println(" Unknown argument: {}\n"
+				" Use -h or --help for help.", argument);
 			exit(1);
 		}
 	}
@@ -289,7 +249,7 @@ void term_resize(bool force) {
 				else if (key.size() == 1 and isint(key)) {
 					auto intKey = stoi(key);
 				#ifdef GPU_SUPPORT
-					if ((intKey == 0 and Gpu::count >= 5) or (intKey >= 5 and intKey - 4 <= Gpu::count)) {
+					if ((intKey == 0 and Gpu::gpu_names.size() >= 5) or (intKey >= 5 and std::cmp_greater_equal(Gpu::gpu_names.size(), intKey - 4))) {
 				#else
 					if (intKey > 0 and intKey < 5) {
 				#endif
@@ -315,7 +275,7 @@ void clean_quit(int sig) {
 	Global::quitting = true;
 	Runner::stop();
 	if (Global::_runner_started) {
-	#if defined __APPLE__ || defined __OpenBSD__ || defined __NetBSD__
+	#if defined __APPLE__ || defined __OpenBSD__
 		if (pthread_join(Runner::runner_id, nullptr) != 0) {
 			Logger::warning("Failed to join _runner thread on exit!");
 			pthread_cancel(Runner::runner_id);
@@ -351,7 +311,7 @@ void clean_quit(int sig) {
 
 	const auto excode = (sig != -1 ? sig : 0);
 
-#if defined __APPLE__ || defined __OpenBSD__ || defined __NetBSD__
+#if defined __APPLE__ || defined __OpenBSD__
 	_Exit(excode);
 #else
 	quick_exit(excode);
@@ -474,7 +434,7 @@ namespace Runner {
 		}
 	};
 
-	//* Wrapper for raising privileges when using SUID bit
+	//* Wrapper for raising priviliges when using SUID bit
 	class gain_priv {
 		int status = -1;
 	public:
@@ -907,7 +867,7 @@ int main(int argc, char **argv) {
 
 	Global::start_time = time_s();
 
-	//? Save real and effective userid's and drop privileges until needed if running with SUID bit set
+	//? Save real and effective userid's and drop priviliges until needed if running with SUID bit set
 	Global::real_uid = getuid();
 	Global::set_uid = geteuid();
 	if (Global::real_uid != Global::set_uid) {
@@ -1046,7 +1006,7 @@ int main(int argc, char **argv) {
 		Config::set("tty_mode", true);
 		Logger::info("Forcing tty mode: setting 16 color mode and using tty friendly graph symbols");
 	}
-#if not defined __APPLE__ && not defined __OpenBSD__ && not defined __NetBSD__
+#if not defined __APPLE__ && not defined __OpenBSD__
 	else if (not Global::arg_tty and Term::current_tty.starts_with("/dev/tty")) {
 		Config::set("tty_mode", true);
 		Logger::info("Real tty detected: setting 16 color mode and using tty friendly graph symbols");
@@ -1075,8 +1035,8 @@ int main(int argc, char **argv) {
 		clean_quit(1);
 	}
 
-	if (not Config::set_boxes(Config::getS("shown_boxes"))) {
-		Config::set_boxes("cpu mem net proc");
+	if (not Config::check_boxes(Config::getS("shown_boxes"))) {
+		Config::check_boxes("cpu mem net proc");
 		Config::set("shown_boxes", "cpu mem net proc"s);
 	}
 
